@@ -1,0 +1,313 @@
+name: Build and Release RyzenAI SD Server
+
+on:
+  push:
+    branches: ["main"]
+    tags:
+      - v*
+  pull_request:
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    name: Build and Test RyzenAI SD Server
+    runs-on: [self-hosted, Windows]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 0
+
+      - name: Install CMake if not available
+        shell: PowerShell
+        run: |
+          $cmakeInstalled = Get-Command cmake -ErrorAction SilentlyContinue
+
+          if (-not $cmakeInstalled) {
+              Write-Host "CMake not found, installing..." -ForegroundColor Yellow
+
+              $cmakeVersion = "3.28.1"
+              $cmakeUrl = "https://github.com/Kitware/CMake/releases/download/v$cmakeVersion/cmake-$cmakeVersion-windows-x86_64.msi"
+              $cmakeInstaller = "cmake-installer.msi"
+
+              Invoke-WebRequest -Uri $cmakeUrl -OutFile $cmakeInstaller
+
+              Start-Process msiexec.exe -ArgumentList "/i $cmakeInstaller /quiet /norestart" -Wait
+
+              $cmakePath = "C:\Program Files\CMake\bin"
+              $env:PATH = "$cmakePath;$env:PATH"
+              echo $cmakePath >> $env:GITHUB_PATH
+
+              cmake --version
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "ERROR: CMake installation failed!" -ForegroundColor Red
+                  exit 1
+              }
+
+              Write-Host "CMake installed successfully!" -ForegroundColor Green
+          } else {
+              Write-Host "CMake is already installed:" -ForegroundColor Green
+              cmake --version
+          }
+
+      - name: Build RyzenAI SD Server
+        shell: PowerShell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Building ryzenai-sd-server..." -ForegroundColor Cyan
+
+          if (Test-Path "build") {
+              Remove-Item -Recurse -Force "build"
+          }
+          mkdir build
+          cd build
+
+          # Configure — ONNXRUNTIME_LIB_DIR defaults to C:\Program Files\RyzenAI\1.7.1\onnxruntime\lib
+          # LIB_DIRECTORY deploys the GenAI-SD lib tree (transaction binaries, DLLs) alongside the exe
+          cmake .. -G "Visual Studio 17 2022" -A x64 `
+            -DLIB_DIRECTORY="C:\Program Files\RyzenAI\1.7.1\GenAI-SD\lib"
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "ERROR: CMake configuration failed!" -ForegroundColor Red
+              exit $LASTEXITCODE
+          }
+
+          cmake --build . --config Release
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "ERROR: Build failed!" -ForegroundColor Red
+              exit $LASTEXITCODE
+          }
+
+          if (-not (Test-Path "bin\Release\ryzenai-sd-server.exe")) {
+              Write-Host "ERROR: ryzenai-sd-server.exe not found!" -ForegroundColor Red
+              exit 1
+          }
+
+          Write-Host "ryzenai-sd-server build successful!" -ForegroundColor Green
+
+      - name: Verify build output
+        shell: PowerShell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseDir = "build\bin\Release"
+
+          Write-Host "Verifying build output..." -ForegroundColor Cyan
+
+          if (-not (Test-Path "$releaseDir\ryzenai-sd-server.exe")) {
+              Write-Host "ERROR: ryzenai-sd-server.exe not found in $releaseDir" -ForegroundColor Red
+              exit 1
+          }
+
+          Write-Host "`nBuild artifacts:" -ForegroundColor Cyan
+          Get-ChildItem $releaseDir -File | ForEach-Object {
+              $sizeMB = [math]::Round($_.Length / 1MB, 2)
+              Write-Host "  - $($_.Name) ($sizeMB MB)" -ForegroundColor Gray
+          }
+
+          # List lib/ subdirectory if present
+          if (Test-Path "$releaseDir\lib") {
+              Write-Host "`n  lib/ directory:" -ForegroundColor Cyan
+              Get-ChildItem "$releaseDir\lib" -Recurse -File | ForEach-Object {
+                  $sizeMB = [math]::Round($_.Length / 1MB, 2)
+                  $rel = $_.FullName.Replace((Resolve-Path $releaseDir).Path + "\", "")
+                  Write-Host "    - $rel ($sizeMB MB)" -ForegroundColor Gray
+              }
+          }
+
+          $fileCount = (Get-ChildItem $releaseDir -Recurse -File | Measure-Object).Count
+          Write-Host "`nTotal: $fileCount files" -ForegroundColor Green
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        shell: PowerShell
+        run: |
+          Write-Host "Installing test dependencies..." -ForegroundColor Cyan
+          python -m pip install --upgrade pip
+          python -m pip install -r test/requirements.txt
+          Write-Host "Test dependencies installed!" -ForegroundColor Green
+
+      - name: Test all models
+        shell: PowerShell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Set HF_HOME to local directory
+          $env:HF_HOME = "${{ github.workspace }}/hf_home"
+
+          if (-not (Test-Path $env:HF_HOME)) {
+              New-Item -ItemType Directory -Path $env:HF_HOME -Force | Out-Null
+          }
+
+          # Model mapping: local directory name → HuggingFace repo ID
+          $modelMap = @{
+              "stable-diffusion-turbo-amdnpu-onnx" = "amd/stable-diffusion-turbo-amdnpu-onnx"
+              "stable-diffusion-1.5-amdnpu-onnx" = "amd/stable-diffusion-1.5-amdnpu-onnx"
+              "stable-diffusion-sdxl-turbo-amdnpu-onnx" = "amd/stable-diffusion-sdxl-turbo-amdnpu-onnx"
+              "stable-diffusion-sdxl-base-amdnpu-onnx" = "amd/stable-diffusion-sdxl-base-amdnpu-onnx"
+              "stable-diffusion-3-medium-amdnpu-onnx" = "amd/stable-diffusion-3-medium-amdnpu-onnx"
+              "stable-diffusion-3.5-medium-amdnpu-onnx" = "amd/stable-diffusion-3.5-medium-amdnpu-onnx"
+              "stable-diffusion-segmind-vega-amdnpu-onnx" = "amd/stable-diffusion-segmind-vega-amdnpu-onnx"
+          }
+
+          # For CI smoke test, only test the fastest model (turbo, 1 step).
+          # To test all models, replace this with: $modelsToTest = $modelMap.Keys
+          $modelsToTest = @("stable-diffusion-turbo-amdnpu-onnx")
+
+          $modelsDir = "${{ github.workspace }}/test_models"
+          $logDir = "${{ github.workspace }}/test_logs"
+          $failed = @()
+
+          foreach ($modelName in $modelsToTest) {
+              $repoId = $modelMap[$modelName]
+              $modelDir = "$modelsDir/$modelName"
+
+              Write-Host "`n============================================================" -ForegroundColor Cyan
+              Write-Host "  Testing model: $modelName" -ForegroundColor Cyan
+              Write-Host "  HF repo: $repoId" -ForegroundColor Cyan
+              Write-Host "============================================================`n" -ForegroundColor Cyan
+
+              # Download the model from HuggingFace
+              Write-Host "Downloading model..." -ForegroundColor Cyan
+              python -c @"
+          import os
+          os.environ['HF_HOME'] = r'${{ github.workspace }}/hf_home'
+          from huggingface_hub import snapshot_download
+          model_name = '$repoId'
+          local_dir = r'$modelDir'
+          print(f'Downloading {model_name} to {local_dir}...')
+          snapshot_download(repo_id=model_name, local_dir=local_dir)
+          print(f'Model downloaded to: {local_dir}')
+          "@
+
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "ERROR: Failed to download model $modelName!" -ForegroundColor Red
+                  $failed += $modelName
+                  continue
+              }
+
+              # Run txt2img test (launches server, generates image, shuts down)
+              Write-Host "Running txt2img test for $modelName..." -ForegroundColor Cyan
+              python test/test_server.py txt2img --model-path $modelDir --port 8090
+
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "ERROR: Tests failed for $modelName!" -ForegroundColor Red
+                  $failed += $modelName
+              } else {
+                  Write-Host "Tests passed for: $modelName" -ForegroundColor Green
+              }
+          }
+
+          # Summary
+          Write-Host "`n============================================================" -ForegroundColor Cyan
+          Write-Host "  Test Summary" -ForegroundColor Cyan
+          Write-Host "============================================================" -ForegroundColor Cyan
+          foreach ($modelName in $modelsToTest) {
+              if ($failed -contains $modelName) {
+                  Write-Host "  $modelName : FAILED" -ForegroundColor Red
+              } else {
+                  Write-Host "  $modelName : PASSED" -ForegroundColor Green
+              }
+          }
+          Write-Host "============================================================`n" -ForegroundColor Cyan
+
+          if ($failed.Count -gt 0) {
+              Write-Host "ERROR: $($failed.Count) model(s) failed: $($failed -join ', ')" -ForegroundColor Red
+              exit 1
+          }
+
+      - name: Upload test outputs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-outputs
+          path: ${{ github.workspace }}/test_outputs/
+          retention-days: 7
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ryzenai-sd-server
+          path: |
+            build/bin/Release/*.exe
+            build/bin/Release/*.dll
+            build/bin/Release/*.pdb
+            build/bin/Release/lib/
+          retention-days: 7
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from CMakeLists.txt
+        id: get_version
+        run: |
+          VERSION=$(grep -oP 'project\(ryzenai-sd-server VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ryzenai-sd-server
+          path: ryzenai-sd-server-files
+
+      - name: Create release zip
+        run: |
+          cd ryzenai-sd-server-files
+          zip -r ../ryzenai-sd-server.zip *
+          cd ..
+          ls -lh ryzenai-sd-server.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get_version.outputs.version }}
+          name: RyzenAI SD Server v${{ steps.get_version.outputs.version }}
+          body: |
+            ## RyzenAI SD Server v${{ steps.get_version.outputs.version }}
+
+            Stable Diffusion inference server for AMD Ryzen AI NPUs using ONNX Runtime.
+
+            ### Installation
+
+            Download `ryzenai-sd-server.zip` and extract to your preferred location.
+
+            ### Requirements
+
+            - Windows 11 (64-bit)
+            - AMD Ryzen AI processor
+
+            ### Usage
+
+            ```cmd
+            # CLI mode — generate a single image
+            ryzenai-sd-server.exe -m C:\path\to\onnx\model -p "A sunset over mountains"
+
+            # Server mode — start HTTP API
+            ryzenai-sd-server.exe --server -m C:\path\to\onnx\model --port 8080
+            ```
+
+            ### Supported Models
+
+            SD 1.5, SD Turbo, SDXL, SDXL Turbo, SD3 Medium, SD3.5 Medium — auto-detected from model directory.
+
+            See the [README](https://github.com/lemonade-sdk/ryzenai-sd-server#readme) for full documentation.
+          files: ryzenai-sd-server.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

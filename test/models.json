@@ -1,0 +1,116 @@
+{
+  "_comment": "Model test configurations. Each model declares its parameters and capabilities.",
+  "defaults": {
+    "width": 512,
+    "height": 512,
+    "steps": 20,
+    "guidance": 7.5,
+    "prompt": "A serene mountain landscape at sunset",
+    "seed": 42,
+    "strength": 0.5
+  },
+  "models": {
+    "stable-diffusion-1.5-amdnpu-onnx": {
+      "width": 512,
+      "height": 512,
+      "steps": 20,
+      "guidance": 7.5,
+      "prompt": "A serene landscape with mountains and a lake at sunset",
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "vae_encoder/model.onnx"
+    },
+    "stable-diffusion-turbo-amdnpu-onnx": {
+      "width": 512,
+      "height": 512,
+      "steps": 1,
+      "guidance": 0.0,
+      "prompt": "A cinematic shot of a baby raccoon wearing an intricate italian priest robe",
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "vae_encoder/model.onnx"
+    },
+    "stable-diffusion-sdxl-base-amdnpu-onnx": {
+      "width": 1024,
+      "height": 1024,
+      "steps": 20,
+      "guidance": 7.5,
+      "prompt": "An astronaut riding a green horse",
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "vae_encoder/model.onnx"
+    },
+    "stable-diffusion-sdxl-turbo-amdnpu-onnx": {
+      "width": 512,
+      "height": 512,
+      "steps": 1,
+      "guidance": 0.0,
+      "prompt": "A cinematic shot of a baby raccoon wearing an intricate italian priest robe",
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "vae_encoder/model.onnx"
+    },
+    "stable-diffusion-3-medium-amdnpu-onnx": {
+      "width": 1024,
+      "height": 1024,
+      "steps": 8,
+      "guidance": 3.0,
+      "prompt": "A capybara holding a sign that reads Hello World",
+      "capabilities": ["txt2img", "img2img", "cli", "controlnet"],
+      "vae_encoder": "common/vae_encoder/dynamic/dd/replaced.onnx",
+      "controlnet_types": ["canny", "pose", "tile", "depth"]
+    },
+    "stable-diffusion-3.5-medium-amdnpu-onnx": {
+      "width": 1024,
+      "height": 1024,
+      "steps": 8,
+      "guidance": 4.5,
+      "prompt": "A capybara holding a sign that reads Hello World",
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "common/vae_encoder/dynamic/dd/replaced.onnx"
+    },
+    "stable-diffusion-segmind-vega-amdnpu-onnx": {
+      "width": 1024,
+      "height": 1024,
+      "steps": 8,
+      "guidance": 7.5,
+      "prompt": "A serene landscape with mountains and a lake at sunset",
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "vae_encoder/dd/replaced.onnx"
+    }
+  },
+  "controlnet": {
+    "canny": {
+      "image": "controlnet_images/canny.jpg",
+      "prompt": "Anime style illustration of a girl wearing a suit. A moon in sky. In the background we see a big rain approaching.",
+      "negative_prompt": "NSFW, nude, naked, porn, ugly",
+      "conditioning_scale": 0.5,
+      "guidance": 7.0,
+      "seed": 42,
+      "steps": 28
+    },
+    "pose": {
+      "image": "controlnet_images/pose.jpg",
+      "prompt": "Anime style illustration of a girl wearing a suit. A moon in sky. In the background we see a big rain approaching.",
+      "negative_prompt": "NSFW, nude, naked, porn, ugly",
+      "conditioning_scale": 0.5,
+      "guidance": 7.0,
+      "seed": 42,
+      "steps": 28
+    },
+    "tile": {
+      "image": "controlnet_images/tile.jpg",
+      "prompt": "Anime style illustration of a girl wearing a suit. A moon in sky. In the background we see a big rain approaching.",
+      "negative_prompt": "NSFW, nude, naked, porn, ugly",
+      "conditioning_scale": 0.5,
+      "guidance": 7.0,
+      "seed": 42,
+      "steps": 28
+    },
+    "depth": {
+      "image": "controlnet_images/depth.jpeg",
+      "prompt": "a panda cub in forest perched on a tree trunk, Photography, depth of field",
+      "negative_prompt": "bad hands, blurry, NSFW, nude, naked, porn, ugly, bad quality",
+      "conditioning_scale": 0.5,
+      "guidance": 7.0,
+      "seed": 42,
+      "steps": 28
+    }
+  }
+}
