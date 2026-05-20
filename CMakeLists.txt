@@ -61,6 +61,17 @@ if(NOT EXISTS "${HTTPLIB_DIR}/httplib.h")
     )
 endif()
 
+# stb_image (single-header PNG/JPEG/BMP decoder)
+set(STB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/stb")
+if(NOT EXISTS "${STB_DIR}/stb_image.h")
+    message(STATUS "Downloading stb_image.h...")
+    file(DOWNLOAD
+        "https://raw.githubusercontent.com/nothings/stb/f0569113c93ad095470c54bf34a17b36646bbbb5/stb_image.h"
+        "${STB_DIR}/stb_image.h"
+        SHOW_PROGRESS
+    )
+endif()
+
 # ── Source files ─────────────────────────────────────────────────────────────
 set(SOURCES
     src/main.cpp
@@ -99,6 +110,7 @@ target_include_directories(ryzenai-sd-server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/sd
     ${CMAKE_CURRENT_SOURCE_DIR}/include/onnxruntime
     ${HTTPLIB_DIR}
+    ${STB_DIR}
 )
 
 # Link libraries

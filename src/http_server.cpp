@@ -12,6 +12,12 @@
 #include <regex>
 #include <random>
 
+// stb_image - single-header image decoder (PNG, JPEG, BMP, etc.)
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#include "stb_image.h"
+
 // cpp-httplib - single-header HTTP server library
 // Download from: https://github.com/yhirose/cpp-httplib/blob/master/httplib.h
 // Place httplib.h in include/ directory
@@ -123,10 +129,28 @@ namespace {
         bool valid = false;
     };
 
-    // For backwards compatibility: try to decode as base64 first, fallback to raw
+    // For backwards compatibility: try PNG/image decode first, then base64 raw RGB, then raw binary
     DecodedImage decode_image_data(const std::vector<uint8_t>& image_data, int expected_w, int expected_h) {
         DecodedImage result;
-        
+
+        // Try decoding as an image file (PNG, JPEG, BMP) via stb_image
+        {
+            int w = 0, h = 0, channels = 0;
+            unsigned char* pixels = stbi_load_from_memory(
+                image_data.data(), static_cast<int>(image_data.size()),
+                &w, &h, &channels, 3);  // force RGB output
+            if (pixels) {
+                result.rgb_data.assign(pixels, pixels + w * h * 3);
+                result.width = w;
+                result.height = h;
+                result.valid = true;
+                stbi_image_free(pixels);
+                std::cout << "  Decoded image file: " << w << "x" << h
+                          << " (" << channels << " channels)" << std::endl;
+                return result;
+            }
+        }
+
         // If it looks like base64 (printable ASCII), decode it
         bool is_base64 = !image_data.empty() && 
                         std::all_of(image_data.begin(), image_data.begin() + std::min((size_t)100, image_data.size()),
@@ -134,7 +158,26 @@ namespace {
         
         if (is_base64) {
             std::string b64_str(image_data.begin(), image_data.end());
-            result.rgb_data = base64_decode(b64_str);
+            auto decoded_bytes = base64_decode(b64_str);
+
+            // Try decoding the base64 content as an image file
+            int w = 0, h = 0, channels = 0;
+            unsigned char* pixels = stbi_load_from_memory(
+                decoded_bytes.data(), static_cast<int>(decoded_bytes.size()),
+                &w, &h, &channels, 3);
+            if (pixels) {
+                result.rgb_data.assign(pixels, pixels + w * h * 3);
+                result.width = w;
+                result.height = h;
+                result.valid = true;
+                stbi_image_free(pixels);
+                std::cout << "  Decoded base64 image: " << w << "x" << h
+                          << " (" << channels << " channels)" << std::endl;
+                return result;
+            }
+
+            // Fall back to treating as raw RGB
+            result.rgb_data = std::move(decoded_bytes);
         } else {
             // Already raw RGB
             result.rgb_data.assign(image_data.begin(), image_data.end());

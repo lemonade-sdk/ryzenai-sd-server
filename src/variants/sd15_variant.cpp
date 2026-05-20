@@ -46,9 +46,11 @@ static VariantDescriptor make_sd15_descriptor() {
         namespace fs = std::filesystem;
         if (fs::exists(base / "normal" / "transformer")) return 0;
         if (fs::exists(base / "text_encoder_2")) return 0;
-        std::string name = base.filename().string();
-        std::string lower = name;
-        std::transform(lower.begin(), lower.end(), lower.begin(),
+        // Check the full path for "turbo" (not just the leaf dir, which may be a hash)
+        std::string full = base.string();
+        std::string lower;
+        lower.resize(full.size());
+        std::transform(full.begin(), full.end(), lower.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (lower.find("turbo") != std::string::npos) return 0;
         return 10;
@@ -105,14 +107,16 @@ static VariantDescriptor make_sd_turbo_descriptor() {
           "vae_encoder/vae_encoder.onnx"}, false},
     };
 
-    // SD-Turbo: has "turbo" in name, no text_encoder_2, no transformer
+    // SD-Turbo: has "turbo" in path, no text_encoder_2, no transformer
     d.detect = [](const std::filesystem::path& base) -> int {
         namespace fs = std::filesystem;
         if (fs::exists(base / "normal" / "transformer")) return 0;
         if (fs::exists(base / "text_encoder_2")) return 0;
-        std::string name = base.filename().string();
-        std::string lower = name;
-        std::transform(lower.begin(), lower.end(), lower.begin(),
+        // Check the full path for "turbo" (not just the leaf dir, which may be a hash)
+        std::string full = base.string();
+        std::string lower;
+        lower.resize(full.size());
+        std::transform(full.begin(), full.end(), lower.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (lower.find("turbo") == std::string::npos) return 0;
         return 15;  // Higher priority than plain SD1.5

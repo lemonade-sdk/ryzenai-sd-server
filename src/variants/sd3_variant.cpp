@@ -51,14 +51,16 @@ static VariantDescriptor make_sd3_descriptor() {
           "vae_encoder/vae_encoder.onnx"}, true},
     };
 
-    // SD3: has transformer dir under normal/, no "3.5" in name
+    // SD3: has transformer dir under normal/, no "3.5" in path
     d.detect = [](const std::filesystem::path& base) -> int {
         namespace fs = std::filesystem;
         if (fs::exists(base / "normal" / "transformer") ||
             fs::exists(base / "normal" / "transformer" / "dd")) {
-            std::string name = base.filename().string();
-            std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
+            // Check the full path (not just the leaf dir, which may be a hash)
+            std::string full = base.string();
+            std::string lower;
+            lower.resize(full.size());
+            std::transform(full.begin(), full.end(), lower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (lower.find("3.5") != std::string::npos || lower.find("3_5") != std::string::npos) {
                 return 0;
@@ -129,14 +131,16 @@ static VariantDescriptor make_sd35_descriptor() {
           "vae_encoder/vae_encoder.onnx"}, true},
     };
 
-    // SD3.5: has transformer dir, "3.5" or "3_5" in name
+    // SD3.5: has transformer dir, "3.5" or "3_5" in path
     d.detect = [](const std::filesystem::path& base) -> int {
         namespace fs = std::filesystem;
         if (fs::exists(base / "normal" / "transformer") ||
             fs::exists(base / "normal" / "transformer" / "dd")) {
-            std::string name = base.filename().string();
-            std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
+            // Check the full path (not just the leaf dir, which may be a hash)
+            std::string full = base.string();
+            std::string lower;
+            lower.resize(full.size());
+            std::transform(full.begin(), full.end(), lower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (lower.find("3.5") != std::string::npos || lower.find("3_5") != std::string::npos) {
                 return 15;

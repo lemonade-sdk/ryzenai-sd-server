@@ -51,9 +51,11 @@ static VariantDescriptor make_sdxl_descriptor() {
         if (fs::exists(base / "normal" / "transformer")) return 0;
         if (!fs::exists(base / "text_encoder_2")) return 0;
         if (fs::exists(base / "unet") || fs::exists(base / "unet/dd")) {
-            std::string name = base.filename().string();
-            std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
+            // Check the full path for "turbo" (not just the leaf dir, which may be a hash)
+            std::string full = base.string();
+            std::string lower;
+            lower.resize(full.size());
+            std::transform(full.begin(), full.end(), lower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (lower.find("turbo") != std::string::npos) return 0;
             return 10;
@@ -116,15 +118,17 @@ static VariantDescriptor make_sdxl_turbo_descriptor() {
           "vae_encoder/vae_encoder.onnx"}, false},
     };
 
-    // SDXL-Turbo: has text_encoder_2, unet, "turbo" in name
+    // SDXL-Turbo: has text_encoder_2, unet, "turbo" in path
     d.detect = [](const std::filesystem::path& base) -> int {
         namespace fs = std::filesystem;
         if (fs::exists(base / "normal" / "transformer")) return 0;
         if (!fs::exists(base / "text_encoder_2")) return 0;
         if (fs::exists(base / "unet") || fs::exists(base / "unet/dd")) {
-            std::string name = base.filename().string();
-            std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
+            // Check the full path for "turbo" (not just the leaf dir, which may be a hash)
+            std::string full = base.string();
+            std::string lower;
+            lower.resize(full.size());
+            std::transform(full.begin(), full.end(), lower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (lower.find("turbo") != std::string::npos) return 15;
         }

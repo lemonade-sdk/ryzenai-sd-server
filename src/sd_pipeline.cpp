@@ -96,6 +96,139 @@ namespace {
         return ret;
     }
 
+    // CRC-32 table for PNG chunk checksums
+    static uint32_t crc32_table[256];
+    static bool crc32_table_init = false;
+
+    void init_crc32_table() {
+        if (crc32_table_init) return;
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int j = 0; j < 8; j++)
+                c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            crc32_table[i] = c;
+        }
+        crc32_table_init = true;
+    }
+
+    uint32_t crc32(const uint8_t* data, size_t len) {
+        init_crc32_table();
+        uint32_t c = 0xFFFFFFFFu;
+        for (size_t i = 0; i < len; i++)
+            c = crc32_table[(c ^ data[i]) & 0xFF] ^ (c >> 8);
+        return c ^ 0xFFFFFFFFu;
+    }
+
+    uint32_t adler32(const uint8_t* data, size_t len) {
+        uint32_t a = 1, b = 0;
+        for (size_t i = 0; i < len; i++) {
+            a = (a + data[i]) % 65521;
+            b = (b + a) % 65521;
+        }
+        return (b << 16) | a;
+    }
+
+    // Write big-endian uint32
+    void write_be32(std::vector<uint8_t>& out, uint32_t v) {
+        out.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
+        out.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
+        out.push_back(static_cast<uint8_t>((v >>  8) & 0xFF));
+        out.push_back(static_cast<uint8_t>( v        & 0xFF));
+    }
+
+    void write_le16(std::vector<uint8_t>& out, uint16_t v) {
+        out.push_back(static_cast<uint8_t>(v & 0xFF));
+        out.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+    }
+
+    // Append a PNG chunk: length + type + data + CRC
+    void write_png_chunk(std::vector<uint8_t>& out, const char type[4],
+                         const uint8_t* data, uint32_t len) {
+        write_be32(out, len);
+        size_t crc_start = out.size();
+        out.insert(out.end(), type, type + 4);
+        if (len > 0) out.insert(out.end(), data, data + len);
+        uint32_t c = crc32(&out[crc_start], 4 + len);
+        write_be32(out, c);
+    }
+
+    // Encode raw RGB data as a PNG file (uncompressed deflate blocks).
+    // No external zlib dependency required.
+    std::vector<uint8_t> encode_png(const uint8_t* rgb, int width, int height) {
+        std::vector<uint8_t> png;
+        // PNG signature
+        const uint8_t sig[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+        png.insert(png.end(), sig, sig + 8);
+
+        // IHDR: width, height, 8-bit depth, color type 2 (RGB)
+        uint8_t ihdr[13];
+        ihdr[0]  = static_cast<uint8_t>((width  >> 24) & 0xFF);
+        ihdr[1]  = static_cast<uint8_t>((width  >> 16) & 0xFF);
+        ihdr[2]  = static_cast<uint8_t>((width  >>  8) & 0xFF);
+        ihdr[3]  = static_cast<uint8_t>( width         & 0xFF);
+        ihdr[4]  = static_cast<uint8_t>((height >> 24) & 0xFF);
+        ihdr[5]  = static_cast<uint8_t>((height >> 16) & 0xFF);
+        ihdr[6]  = static_cast<uint8_t>((height >>  8) & 0xFF);
+        ihdr[7]  = static_cast<uint8_t>( height        & 0xFF);
+        ihdr[8]  = 8;   // bit depth
+        ihdr[9]  = 2;   // color type: RGB
+        ihdr[10] = 0;   // compression
+        ihdr[11] = 0;   // filter
+        ihdr[12] = 0;   // interlace
+        write_png_chunk(png, "IHDR", ihdr, 13);
+
+        // Build filtered scanlines (filter byte 0 = None per row)
+        size_t row_bytes = static_cast<size_t>(width) * 3;
+        size_t raw_size = static_cast<size_t>(height) * (1 + row_bytes);
+        std::vector<uint8_t> raw_data;
+        raw_data.reserve(raw_size);
+        for (int y = 0; y < height; y++) {
+            raw_data.push_back(0); // filter: None
+            raw_data.insert(raw_data.end(),
+                            rgb + y * row_bytes,
+                            rgb + y * row_bytes + row_bytes);
+        }
+
+        // Build zlib stream with uncompressed (stored) deflate blocks
+        // zlib header: CM=8 (deflate), CINFO=7 (32K window), FCHECK
+        std::vector<uint8_t> zlib_data;
+        uint8_t cmf = 0x78;  // CM=8, CINFO=7
+        uint8_t flg = 0x01;  // FCHECK=1 (makes (cmf*256+flg) % 31 == 0)
+        zlib_data.push_back(cmf);
+        zlib_data.push_back(flg);
+
+        // Split raw data into stored deflate blocks (max 65535 bytes each)
+        const size_t max_block = 65535;
+        size_t offset = 0;
+        while (offset < raw_data.size()) {
+            size_t remaining = raw_data.size() - offset;
+            size_t block_size = std::min(remaining, max_block);
+            bool is_last = (offset + block_size >= raw_data.size());
+
+            zlib_data.push_back(is_last ? 0x01 : 0x00); // BFINAL | BTYPE=00 (stored)
+            uint16_t len = static_cast<uint16_t>(block_size);
+            uint16_t nlen = static_cast<uint16_t>(~len);
+            write_le16(zlib_data, len);
+            write_le16(zlib_data, nlen);
+            zlib_data.insert(zlib_data.end(),
+                             raw_data.data() + offset,
+                             raw_data.data() + offset + block_size);
+            offset += block_size;
+        }
+
+        // Adler-32 checksum of uncompressed data
+        uint32_t adler = adler32(raw_data.data(), raw_data.size());
+        write_be32(zlib_data, adler);
+
+        write_png_chunk(png, "IDAT", zlib_data.data(),
+                        static_cast<uint32_t>(zlib_data.size()));
+
+        // IEND
+        write_png_chunk(png, "IEND", nullptr, 0);
+
+        return png;
+    }
+
 }
 
 // ============================================================================
@@ -515,8 +648,9 @@ ImageResponse SDPipeline::generate(
 
     last_timing_ = {text_enc_sec, denoise_sec, vae_sec, total_sec, config_.num_inference_steps};
 
-    // 5. Base64-encode raw RGB data; client is responsible for PNG encoding
-    std::string b64_json = base64_encode(rgb_data.data(), rgb_data.size());
+    // 5. Encode as PNG and base64 for OpenAI-compatible response
+    auto png_data = encode_png(rgb_data.data(), output_w, output_h);
+    std::string b64_json = base64_encode(png_data.data(), png_data.size());
 
     // 6. Populate ImageResponse with OpenAI-compatible format
     ImageData img_data;
