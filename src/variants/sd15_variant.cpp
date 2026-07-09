@@ -4,7 +4,7 @@
 #include "variant_registry.h"
 #include "variants/sd15_text_encoder.h"
 #include "variants/sd15_vae_decoder.h"
-#include "variants/sd15_denoiser.h"
+#include "variants/generic_denoiser.h"
 
 namespace sd_npu {
 
@@ -64,7 +64,8 @@ static VariantDescriptor make_sd15_descriptor() {
     d.create_denoiser = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components,
                            ControlNetRunner*, const SDConfig&)
         -> std::unique_ptr<IDenoiser> {
-        return std::make_unique<SD15Denoiser>(components, 768);
+        return std::make_unique<GenericDenoiser>(
+            components, DenoiserSpec{ComponentType::UNET, 77, 768, 0, 4});
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
@@ -130,7 +131,8 @@ static VariantDescriptor make_sd_turbo_descriptor() {
     d.create_denoiser = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components,
                            ControlNetRunner*, const SDConfig&)
         -> std::unique_ptr<IDenoiser> {
-        return std::make_unique<SD15Denoiser>(components, 1024);
+        return std::make_unique<GenericDenoiser>(
+            components, DenoiserSpec{ComponentType::UNET, 77, 1024, 0, 4});
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {

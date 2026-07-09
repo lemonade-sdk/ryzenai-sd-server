@@ -84,15 +84,13 @@ set(SOURCES
     src/variant_registry.cpp
     src/controlnet_runner.cpp
     # Variant implementations
+    src/variants/generic_denoiser.cpp    # unified denoiser for SD1.5 / SDXL / SD3
     src/variants/sd15_text_encoder.cpp
     src/variants/sd15_vae_decoder.cpp
-    src/variants/sd15_denoiser.cpp
     src/variants/sdxl_text_encoder.cpp
     src/variants/sdxl_vae_decoder.cpp
-    src/variants/sdxl_denoiser.cpp
     src/variants/sd3_text_encoder.cpp
     src/variants/sd3_vae_decoder.cpp
-    src/variants/sd3_denoiser.cpp
     # Variant registrations (self-registering descriptors)
     src/variants/sd15_variant.cpp
     src/variants/sdxl_variant.cpp

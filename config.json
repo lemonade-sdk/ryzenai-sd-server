@@ -1,0 +1,26 @@
+{
+  "paths": {
+    "onnxruntime_root": "C:/Program Files/RyzenAI/1.7.1/onnxruntime",
+    "custom_ops_dll": "C:/Program Files/RyzenAI/1.7.1/deployment/onnx_custom_ops.dll",
+    "dd_root": "C:/Program Files/RyzenAI/1.7.1/GenAI-SD/lib",
+    "dd_plugins_root": "C:/Program Files/RyzenAI/1.7.1/GenAI-SD/lib/transaction/stx",
+    "opencv_root": "C:/Users/mickraus/opencv",
+    "lib_directory": "C:/Program Files/RyzenAI/1.7.1/GenAI-SD/lib"
+  },
+  "models": {
+    "default_model_path": "",
+    "models_directory": "models"
+  },
+  "server": {
+    "default_port": 8080,
+    "host": "0.0.0.0"
+  },
+  "generation": {
+    "default_prompt": "A serene landscape with mountains and a lake at sunset",
+    "default_negative_prompt": "blurry, low quality, distorted, ugly",
+    "default_width": 512,
+    "default_height": 512,
+    "default_guidance_scale": 7.0,
+    "default_scheduler": "euler"
+  }
+}
