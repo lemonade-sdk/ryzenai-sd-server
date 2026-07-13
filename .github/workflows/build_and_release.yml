@@ -125,12 +125,13 @@ jobs:
         shell: PowerShell
         run: |
           $ErrorActionPreference = "Stop"
+          $pythonVersion = "3.11.9"
 
           # Check if Python is already available in PATH
           $py = Get-Command python -ErrorAction SilentlyContinue
           if ($py) {
             $ver = python --version 2>&1
-            Write-Host "Python already in PATH: $ver" -ForegroundColor Green
+            Write-Host "Python already in PATH ($($py.Source)): $ver" -ForegroundColor Green
             exit 0
           }
 
@@ -156,35 +157,45 @@ jobs:
             }
           }
 
-          # Fall back: download and install Python 3.11 for the current user (no admin required)
-          Write-Host "Python not found — downloading Python 3.11.9 installer..." -ForegroundColor Yellow
-          $installer = "$env:TEMP\python-3.11.9-amd64.exe"
-          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" `
+          # Fall back: download and install Python for the current user (no admin required)
+          Write-Host "Python not found — downloading Python $pythonVersion installer..." -ForegroundColor Yellow
+          $installer = "$env:TEMP\python-$pythonVersion-amd64.exe"
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-amd64.exe" `
             -OutFile $installer -UseBasicParsing
-          Write-Host "Installing Python 3.11.9 (user-level, no admin required)..." -ForegroundColor Yellow
-          Start-Process -FilePath $installer `
+          Write-Host "Installing Python $pythonVersion (user-level, no admin required)..." -ForegroundColor Yellow
+          $proc = Start-Process -FilePath $installer `
             -ArgumentList "/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_test=0" `
-            -Wait -NoNewWindow
+            -Wait -NoNewWindow -PassThru
           Remove-Item $installer -Force -ErrorAction SilentlyContinue
+          if ($proc.ExitCode -ne 0) {
+            Write-Host "ERROR: Python installer exited with code $($proc.ExitCode)" -ForegroundColor Red
+            exit 1
+          }
 
           # Refresh user PATH from registry
           $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
           $env:PATH  = "$userPath;$env:PATH"
 
           # Add newly installed Python to GITHUB_PATH for subsequent steps
-          $installed = @(
+          $installedPaths = @(
             "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
             "C:\Python311\python.exe"
           )
-          foreach ($p in $installed) {
+          $found = $false
+          foreach ($p in $installedPaths) {
             if (Test-Path $p) {
               $dir = Split-Path $p
               "$dir"         | Out-File $env:GITHUB_PATH -Append -Encoding utf8
               "$dir\Scripts" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
               $env:PATH = "$dir;$dir\Scripts;$env:PATH"
               Write-Host "Python installed at: $p" -ForegroundColor Green
+              $found = $true
               break
             }
+          }
+          if (-not $found) {
+            Write-Host "ERROR: Python $pythonVersion installed successfully but executable not found in expected locations." -ForegroundColor Red
+            exit 1
           }
 
           $ver = python --version 2>&1
