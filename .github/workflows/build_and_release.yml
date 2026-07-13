@@ -236,7 +236,11 @@ jobs:
           # To test all models, replace this with: $modelsToTest = $modelMap.Keys
           $modelsToTest = @("stable-diffusion-turbo-amdnpu-onnx")
 
-          $modelsDir = "${{ github.workspace }}/test_models"
+          # Use a short absolute path so that huggingface_hub's temp download
+          # files ({local_dir}/.cache/huggingface/download/…/<hash>.incomplete)
+          # stay within Windows' 260-character MAX_PATH limit regardless of
+          # whether the runner has admin rights to enable long-path support.
+          $modelsDir = "C:\m"
           $logDir = "${{ github.workspace }}/test_logs"
           $failed = @()
 
