@@ -216,7 +216,7 @@ jobs:
 
           # Keep paths short on Windows to avoid MAX_PATH issues in HuggingFace cache files.
           $env:HF_HOME = "$env:RUNNER_TEMP\hf"
-          $modelsDir = "$env:RUNNER_TEMP\m"
+          $modelsDir = "$env:RUNNER_TEMP\models"
           $logDir = "$env:RUNNER_TEMP\logs"
 
           if (-not (Test-Path $env:HF_HOME)) {
