@@ -192,7 +192,7 @@ jobs:
           # registry flag (and git) lets the download succeed.
           try {
               Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
-                  -Name "LongPathsEnabled" -Value 1 -Type DWord -Force
+                  -Name "LongPathsEnabled" -Value 1 -Type DWord -Force -ErrorAction Stop
               Write-Host "LongPathsEnabled registry flag set to 1" -ForegroundColor Green
           } catch {
               Write-Host "WARNING: could not set LongPathsEnabled (requires admin): $_" -ForegroundColor Yellow
@@ -214,11 +214,19 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Set HF_HOME to local directory
-          $env:HF_HOME = "${{ github.workspace }}/hf_home"
+          # Keep paths short on Windows to avoid MAX_PATH issues in HuggingFace cache files.
+          $env:HF_HOME = "$env:RUNNER_TEMP\hf"
+          $modelsDir = "$env:RUNNER_TEMP\models"
+          $logDir = "$env:RUNNER_TEMP\logs"
 
           if (-not (Test-Path $env:HF_HOME)) {
               New-Item -ItemType Directory -Path $env:HF_HOME -Force | Out-Null
+          }
+          if (-not (Test-Path $modelsDir)) {
+              New-Item -ItemType Directory -Path $modelsDir -Force | Out-Null
+          }
+          if (-not (Test-Path $logDir)) {
+              New-Item -ItemType Directory -Path $logDir -Force | Out-Null
           }
 
           # Model mapping: local directory name → HuggingFace repo ID
@@ -236,8 +244,6 @@ jobs:
           # To test all models, replace this with: $modelsToTest = $modelMap.Keys
           $modelsToTest = @("stable-diffusion-turbo-amdnpu-onnx")
 
-          $modelsDir = "${{ github.workspace }}/test_models"
-          $logDir = "${{ github.workspace }}/test_logs"
           $failed = @()
 
           foreach ($modelName in $modelsToTest) {
@@ -253,7 +259,7 @@ jobs:
               Write-Host "Downloading model..." -ForegroundColor Cyan
               python -c @"
           import os
-          os.environ['HF_HOME'] = r'${{ github.workspace }}/hf_home'
+          os.environ['HF_HOME'] = r'$env:HF_HOME'
           from huggingface_hub import snapshot_download
           model_name = '$repoId'
           local_dir = r'$modelDir'
