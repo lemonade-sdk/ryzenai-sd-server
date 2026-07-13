@@ -172,16 +172,21 @@ def save_response_image(response_json, output_path):
     raw_bytes = base64.b64decode(data_list[0]["b64_json"])
     fmt = response_json.get("format", "png")
 
-    if fmt == "raw_rgb":
+    # The server encodes output via stb_image_write as PNG then base64-encodes
+    # that PNG — even when it labels the response format "raw_rgb".
+    # Always decode through PIL so we handle PNG, JPEG, and true raw RGB uniformly.
+    from io import BytesIO
+    try:
+        img = Image.open(BytesIO(raw_bytes)).convert("RGB")
+    except Exception:
+        # Last resort: treat as packed raw RGB using dimensions from the response
         w = response_json.get("width", 0)
         h = response_json.get("height", 0)
         if w <= 0 or h <= 0:
-            raise ValueError(f"raw_rgb but missing dimensions: {w}x{h}")
-        arr = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(h, w, 3)
+            raise ValueError(f"Cannot decode image: PIL failed and no valid dimensions in response (format={fmt})")
+        expected = h * w * 3
+        arr = np.frombuffer(raw_bytes[:expected], dtype=np.uint8).reshape(h, w, 3)
         img = Image.fromarray(arr, "RGB")
-    else:
-        from io import BytesIO
-        img = Image.open(BytesIO(raw_bytes)).convert("RGB")
 
     img.save(str(output_path), "PNG")
     return output_path
@@ -354,6 +359,11 @@ def run_tests(args):
     mode = args.mode
     port = args.port
     url = args.url or f"http://localhost:{port}"
+
+    if args.dry_run:
+        _dry_run(args, config, mode)
+        return
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = OUTPUT_DIR / mode / ts
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -511,7 +521,8 @@ Notes:
     parser.add_argument(
         "mode",
         choices=["txt2img", "img2img", "controlnet", "cli"],
-        help="Test mode to run",
+        help="Test mode to run (required). One of: txt2img, img2img, controlnet, cli. "
+             "Example: python test_server.py txt2img --all-models",
     )
 
     # Model selection (mutually exclusive approaches)
@@ -535,15 +546,22 @@ Notes:
     parser.add_argument("--types", nargs="+", help="ControlNet types to test (default: all for model)")
     parser.add_argument("--control-image", help="Override control image path (applies to all types being tested)")
 
+    # Dry run
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate config and show what would be tested without launching servers or requiring model files.",
+    )
+
     args = parser.parse_args()
 
     # Validate args
-    if args.mode != "cli" and not args.url and not args.model_path and not args.all_models:
-        parser.error(f"For '{args.mode}' mode, provide --url, --model-path, or --all-models")
-    if args.mode == "cli" and not args.model_path and not args.all_models:
-        parser.error("For 'cli' mode, provide --model-path or --all-models")
+    if not args.dry_run:
+        if args.mode != "cli" and not args.url and not args.model_path and not args.all_models:
+            parser.error(f"For '{args.mode}' mode, provide --url, --model-path, or --all-models")
+        if args.mode == "cli" and not args.model_path and not args.all_models:
+            parser.error("For 'cli' mode, provide --model-path or --all-models")
 
-    # Apply overrides to config after loading
     run_tests(args)
 
 
