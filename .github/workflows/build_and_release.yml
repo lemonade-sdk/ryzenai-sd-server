@@ -122,9 +122,65 @@ jobs:
           Write-Host "`nTotal: $fileCount files" -ForegroundColor Green
 
       - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+        shell: PowerShell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Prefer an already-installed Python 3.12 on the self-hosted runner.
+          # actions/setup-python's toolcache install is unreliable on self-hosted
+          # Windows runners (setup.ps1 throws "Error happened during Python installation"),
+          # so we detect an existing interpreter and only install if none is found.
+          function Get-Python312 {
+              $candidates = @()
+              $py = Get-Command py -ErrorAction SilentlyContinue
+              if ($py) {
+                  $exe = & py -3.12 -c "import sys; print(sys.executable)" 2>$null
+                  if ($LASTEXITCODE -eq 0 -and $exe) { $candidates += $exe.Trim() }
+              }
+              foreach ($cmd in @("python", "python3")) {
+                  $c = Get-Command $cmd -ErrorAction SilentlyContinue
+                  if ($c) {
+                      $ver = & $c.Source -c "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>$null
+                      if ($LASTEXITCODE -eq 0 -and $ver -eq "3.12") { $candidates += $c.Source }
+                  }
+              }
+              return ($candidates | Select-Object -First 1)
+          }
+
+          $pythonExe = Get-Python312
+
+          if (-not $pythonExe) {
+              Write-Host "Python 3.12 not found, installing..." -ForegroundColor Yellow
+
+              $pythonVersion = "3.12.7"
+              $pythonUrl = "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-amd64.exe"
+              $pythonInstaller = "$env:RUNNER_TEMP\python-installer.exe"
+              $installDir = "$env:RUNNER_TEMP\Python312"
+
+              Invoke-WebRequest -Uri $pythonUrl -OutFile $pythonInstaller
+
+              # Per-user, quiet install (no admin required on self-hosted runner)
+              Start-Process -FilePath $pythonInstaller -ArgumentList `
+                  "/quiet", "InstallAllUsers=0", "PrependPath=0", "Include_launcher=0", `
+                  "Include_test=0", "TargetDir=$installDir" -Wait
+
+              $pythonExe = Join-Path $installDir "python.exe"
+              if (-not (Test-Path $pythonExe)) {
+                  Write-Host "ERROR: Python installation failed!" -ForegroundColor Red
+                  exit 1
+              }
+
+              Write-Host "Python installed successfully!" -ForegroundColor Green
+          } else {
+              Write-Host "Python 3.12 is already installed: $pythonExe" -ForegroundColor Green
+          }
+
+          # Expose the interpreter's directory on PATH for subsequent steps
+          $pythonDir = Split-Path $pythonExe -Parent
+          echo $pythonDir >> $env:GITHUB_PATH
+          echo (Join-Path $pythonDir "Scripts") >> $env:GITHUB_PATH
+
+          & $pythonExe --version
 
       - name: Install test dependencies
         shell: PowerShell
