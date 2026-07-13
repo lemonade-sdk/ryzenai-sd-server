@@ -135,7 +135,9 @@ jobs:
             exit 0
           }
 
-          # Check common installation locations on Windows
+          # Check common installation locations on Windows.
+          # This list is intentionally broad so that any pre-installed compatible
+          # Python 3.x on the self-hosted runner is accepted (3.10, 3.11, 3.12).
           $candidates = @(
             "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
             "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
@@ -176,7 +178,8 @@ jobs:
           $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
           $env:PATH  = "$userPath;$env:PATH"
 
-          # Add newly installed Python to GITHUB_PATH for subsequent steps
+          # Add newly installed Python $pythonVersion to GITHUB_PATH for subsequent steps.
+          # These paths are specific to the version we just installed above.
           $installedPaths = @(
             "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
             "C:\Python311\python.exe"
