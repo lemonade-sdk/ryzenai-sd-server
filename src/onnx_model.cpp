@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #ifdef _WIN32
@@ -17,13 +19,61 @@ namespace fs = std::filesystem;
 
 namespace sd_npu {
 
+namespace {
+
+// The vendor RyzenAI NPU execution provider occasionally returns all-NaN
+// tensors or a hard AIE command timeout on an otherwise-valid inference call
+// on a long-lived session (observed alternating valid/NaN output across
+// consecutive requests, and sporadic ERT_CMD_STATE_TIMEOUT / AIE_STREAM
+// errors) -- this is inside the closed-source EP DLL and not something this
+// codebase can fix at the source. Retrying the same Run() call a few times
+// is a bounded mitigation; if it never recovers, callers get a clear error
+// instead of silently returning a corrupted result.
+constexpr int kMaxNpuRetries = 3;
+
+bool output_has_nan(const std::vector<Ort::Value>& outputs) {
+    for (const auto& out : outputs) {
+        if (!out.IsTensor()) continue;
+        auto info = out.GetTensorTypeAndShapeInfo();
+        size_t count = info.GetElementCount();
+        switch (info.GetElementType()) {
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT: {
+                const float* data = out.GetTensorData<float>();
+                for (size_t i = 0; i < count; i++) {
+                    if (std::isnan(data[i])) return true;
+                }
+                break;
+            }
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: {
+                const Ort::Float16_t* data = out.GetTensorData<Ort::Float16_t>();
+                for (size_t i = 0; i < count; i++) {
+                    if (std::isnan(data[i].ToFloat())) return true;
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    return false;
+}
+
+bool is_transient_npu_error(const Ort::Exception& e) {
+    std::string msg = e.what();
+    return msg.find("TIMEOUT") != std::string::npos ||
+           msg.find("AIE") != std::string::npos;
+}
+
+} // namespace
+
 // ============================================================================
 // OnnxModel Implementation
 // ============================================================================
 
 OnnxModel::OnnxModel(const std::string& model_path,
                      Ort::SessionOptions& /*base_options*/,
-                     Ort::Env& env) {
+                     Ort::Env& env)
+    : model_path_(model_path) {
 
     std::cout << "Loading ONNX model: " << model_path << std::endl;
 
@@ -184,22 +234,50 @@ std::vector<Ort::Value> OnnxModel::run(
     const std::vector<const char*>& input_names,
     const std::vector<const char*>& output_names) {
 
-    try {
-        return session_->Run(
-            Ort::RunOptions{nullptr},
-            input_names.data(),
-            inputs.data(),
-            inputs.size(),
-            output_names.data(),
-            output_names.size()
-        );
-    } catch (const Ort::Exception& e) {
-        std::cerr << "ONNX Runtime error during inference: " << e.what() << std::endl;
-        throw;
-    } catch (const std::exception& e) {
-        std::cerr << "Error during inference: " << e.what() << std::endl;
-        throw;
+    for (int attempt = 1; attempt <= kMaxNpuRetries; attempt++) {
+        std::vector<Ort::Value> outputs;
+        try {
+            outputs = session_->Run(
+                Ort::RunOptions{nullptr},
+                input_names.data(),
+                inputs.data(),
+                inputs.size(),
+                output_names.data(),
+                output_names.size()
+            );
+        } catch (const Ort::Exception& e) {
+            std::cerr << "ONNX Runtime error during inference (" << model_path_ << "): "
+                      << e.what() << std::endl;
+            if (is_transient_npu_error(e) && attempt < kMaxNpuRetries) {
+                std::cerr << "  [WARN] Transient RyzenAI NPU EP fault -- retrying inference "
+                          << attempt << "/" << kMaxNpuRetries << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                continue;
+            }
+            throw;
+        } catch (const std::exception& e) {
+            std::cerr << "Error during inference (" << model_path_ << "): " << e.what() << std::endl;
+            throw;
+        }
+
+        if (!output_has_nan(outputs)) {
+            return outputs;
+        }
+
+        if (attempt < kMaxNpuRetries) {
+            std::cerr << "  [WARN] " << model_path_ << ": ONNX Runtime output contained NaN "
+                      << "(likely a transient RyzenAI NPU EP fault) -- retrying inference "
+                      << attempt << "/" << kMaxNpuRetries << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            continue;
+        }
+
+        throw std::runtime_error(
+            "ONNX Runtime output contained NaN after " + std::to_string(kMaxNpuRetries) +
+            " attempts (model: " + model_path_ + ") -- likely an unrecoverable RyzenAI NPU EP fault");
     }
+
+    throw std::runtime_error("ONNX Runtime inference failed after retries (model: " + model_path_ + ")");
 }
 
 std::vector<Ort::Value> OnnxModel::run(const std::vector<Ort::Value>& inputs) {

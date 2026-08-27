@@ -46,6 +46,7 @@ private:
     std::unique_ptr<Ort::Session> session_;
     std::vector<std::string> input_names_;
     std::vector<std::string> output_names_;
+    std::string model_path_;
 };
 
 } // namespace sd_npu
