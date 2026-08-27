@@ -745,12 +745,16 @@ void SDServer::run() {
             } else {
                 req_config.seed = (int)(std::chrono::steady_clock::now().time_since_epoch().count() % 2147483647);
             }
+            if (req.form.has_field("strength")) {
+                try { req_config.strength = std::stof(req.form.get_field("strength")); } catch (...) {}
+            }
 
             std::cout << "  prompt: \"" << clean_prompt << "\"" << std::endl;
             std::cout << "  size: " << req_config.width << "x" << req_config.height << std::endl;
             std::cout << "  steps: " << req_config.num_inference_steps
                       << ", cfg_scale: " << req_config.guidance_scale
-                      << ", seed: " << req_config.seed << std::endl;
+                      << ", seed: " << req_config.seed
+                      << ", strength: " << req_config.strength << std::endl;
 
             // Decode input image if provided (expects base64-encoded raw RGB)
             std::vector<uint8_t> control_rgb;
