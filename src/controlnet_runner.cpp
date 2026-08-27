@@ -45,21 +45,28 @@ std::vector<std::vector<Ort::Float16_t>> ControlNetRunner::compute(
     }
 
     // 2. controlnet_cond (VAE-encoded control image in latent space) - fp16
-    // Channel count is derived from the actual conditioning buffer rather than
-    // assumed equal to the main latent's `channels`: mask-aware ControlNets
-    // (e.g. SD3 ControlNet-Inpainting) concatenate a 1-channel downsampled
-    // mask onto the 16-channel masked-image latents, producing a 17-channel
-    // cond tensor (extra_conditioning_channels=1 in the model config).
+    // control_cond as received from the pipeline is always single-batch;
+    // CFG batching happens here, keyed on the same `batch` the denoiser computed
+    // from the encoder's actual output (not guidance_scale). Channel count is
+    // derived from the single-batch buffer rather than assumed equal to the main
+    // latent's `channels`: mask-aware ControlNets (e.g. SD3 ControlNet-Inpainting)
+    // concatenate a 1-channel downsampled mask onto the 16-channel masked-image
+    // latents, producing a 17-channel cond tensor (extra_conditioning_channels=1
+    // in the model config). Declaring the ONNX shape as `channels` here instead
+    // caused a shape mismatch against the actual buffer size.
     size_t cond_hw = static_cast<size_t>(latent_h) * static_cast<size_t>(latent_w);
-    size_t cond_channels = (batch > 0 && cond_hw > 0)
-        ? control_cond.size() / (static_cast<size_t>(batch) * cond_hw)
+    size_t cond_channels = (cond_hw > 0)
+        ? control_cond.size() / cond_hw
         : static_cast<size_t>(channels);
     if (cond_channels == 0) cond_channels = static_cast<size_t>(channels);
     std::vector<int64_t> cond_shape = {batch, static_cast<int64_t>(cond_channels), latent_h, latent_w};
-    size_t cond_size = static_cast<size_t>(batch) * cond_channels * cond_hw;
+    size_t single_cond_size = cond_channels * cond_hw;
+    size_t cond_size = static_cast<size_t>(batch) * single_cond_size;
     std::vector<Ort::Float16_t> cond_fp16(cond_size);
-    for (size_t i = 0; i < cond_size && i < control_cond.size(); i++) {
-        cond_fp16[i] = Ort::Float16_t(control_cond[i]);
+    for (int b = 0; b < batch; b++) {
+        for (size_t i = 0; i < single_cond_size && i < control_cond.size(); i++) {
+            cond_fp16[static_cast<size_t>(b) * single_cond_size + i] = Ort::Float16_t(control_cond[i]);
+        }
     }
 
     // 3. conditioning_scale - fp16 scalar

@@ -577,18 +577,12 @@ ImageResponse SDPipeline::generate(
         controlnet_cond = process_control_image(control_image, control_mask);
         if (controlnet_cond.empty()) {
             std::cout << "  WARNING: Failed to process control image, continuing without ControlNet" << std::endl;
-        } else {
-            // Duplicate control latents for CFG (batch_size = 2: uncond + cond)
-            if (config_.guidance_scale > 1.0f) {
-                size_t single_size = controlnet_cond.size();
-                std::vector<float> controlnet_cond_cfg(single_size * 2);
-                // Copy once for uncond, once for cond
-                std::copy(controlnet_cond.begin(), controlnet_cond.end(), controlnet_cond_cfg.begin());
-                std::copy(controlnet_cond.begin(), controlnet_cond.end(), controlnet_cond_cfg.begin() + single_size);
-                controlnet_cond = std::move(controlnet_cond_cfg);
-                std::cout << "  Control latents duplicated for CFG (batch=2)" << std::endl;
-            }
         }
+        // controlnet_cond stays single-batch here. CFG batching for ControlNet is
+        // decided by ControlNetRunner::compute() from the denoiser's actual `batch`
+        // (encoder-output-derived, not guidance_scale) -- gating duplication on
+        // guidance_scale > 1.0 here used to desync from that and crash the NPU EP
+        // on any ControlNet request with guidance_scale <= 1.0 (e.g. "pose", 0.0).
     }
 
     // For img2img: encode the input image and add noise
