@@ -9,7 +9,8 @@
   },
   "models": {
     "default_model_path": "",
-    "models_directory": "models"
+    "models_directory": "models",
+    "rc3_models_directory": "C:/Users/mickraus/Work/RC3_test/GenAI-SD/models"
   },
   "server": {
     "default_port": 8080,

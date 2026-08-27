@@ -91,10 +91,14 @@ set(SOURCES
     src/variants/sdxl_vae_decoder.cpp
     src/variants/sd3_text_encoder.cpp
     src/variants/sd3_vae_decoder.cpp
+    src/variants/flux_text_encoder.cpp
+    src/variants/flux_vae_decoder.cpp
     # Variant registrations (self-registering descriptors)
     src/variants/sd15_variant.cpp
     src/variants/sdxl_variant.cpp
     src/variants/sd3_variant.cpp
+    src/variants/sdxl_derived_variants.cpp
+    src/variants/flux_variant.cpp
 )
 
 # Create executable

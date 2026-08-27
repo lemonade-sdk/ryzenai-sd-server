@@ -32,7 +32,12 @@ enum class ModelVariant {
     SDXL,
     SDXL_TURBO,
     SD3,
-    SD35
+    SD35,
+    PLAYGROUND_V25,
+    DREAMSHAPER_XL_LIGHTNING,
+    SSD_1B,
+    FLUX1_SCHNELL,
+    FLUX2_KLEIN
 };
 
 // ControlNet type

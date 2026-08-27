@@ -49,6 +49,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 MODELS_JSON = SCRIPT_DIR / "models.json"
 DEFAULT_MODELS_DIR = Path(r"C:\Users\mickraus\sd_models\1.7.1_models")
+RC3_MODELS_DIR = Path(r"C:\Users\mickraus\Work\RC3_test\GenAI-SD\models")
 OUTPUT_DIR = PROJECT_ROOT / "test_outputs"
 
 
@@ -369,6 +370,9 @@ def run_tests(args):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine which models to test
+    if getattr(args, "rc3", False):
+        args.models_dir = str(RC3_MODELS_DIR)
+
     if args.all_models:
         models_dir = Path(args.models_dir)
         model_names = discover_models(models_dir, mode, config)
@@ -534,6 +538,8 @@ Notes:
     parser.add_argument("--url", help="Server URL (skip auto-launch, test against running server)")
     parser.add_argument("--port", type=int, default=8080, help="Port for auto-launched server (default: 8080)")
     parser.add_argument("--models-dir", default=str(DEFAULT_MODELS_DIR), help="Directory containing model folders")
+    parser.add_argument("--rc3", action="store_true",
+                        help=f"Use RC3 models directory ({RC3_MODELS_DIR})")
     parser.add_argument("--model-name", help="Model name (used with --url when server is already running)")
 
     # Overrides

@@ -73,6 +73,54 @@
       "prompt": "A serene landscape with mountains and a lake at sunset",
       "capabilities": ["txt2img", "img2img", "cli"],
       "vae_encoder": "vae_encoder/dd/replaced.onnx"
+    },
+    "amd_playground-v2.5-1024px-aesthetic-amdnpu": {
+      "width": 1024,
+      "height": 1024,
+      "steps": 20,
+      "guidance": 3.0,
+      "prompt": "A serene mountain landscape at golden hour, photorealistic, highly detailed",
+      "capabilities": ["txt2img", "cli"]
+    },
+    "amd_dreamshaper-xl-lightning-amdnpu": {
+      "width": 1024,
+      "height": 1024,
+      "steps": 4,
+      "guidance": 1.0,
+      "prompt": "A fantasy warrior in epic armor, cinematic lighting, detailed",
+      "capabilities": ["txt2img", "cli"]
+    },
+    "amd_SSD-1B-amdnpu": {
+      "width": 1024,
+      "height": 1024,
+      "steps": 20,
+      "guidance": 5.0,
+      "prompt": "An astronaut riding a green horse on the moon",
+      "capabilities": ["txt2img", "cli"]
+    },
+    "amd_FLUX.1-schnell-amdnpu": {
+      "width": 1024,
+      "height": 1024,
+      "steps": 4,
+      "guidance": 0.0,
+      "prompt": "A capybara sitting in a field of sunflowers, photorealistic",
+      "capabilities": ["txt2img", "cli"]
+    },
+    "amd_FLUX.2-klein-4B-amdnpu": {
+      "width": 1024,
+      "height": 1024,
+      "steps": 20,
+      "guidance": 0.0,
+      "prompt": "A futuristic cityscape at night with neon lights",
+      "capabilities": ["txt2img", "cli"]
+    },
+    "amd_sd1.5-controlnet-canny-amdnpu": {
+      "width": 512,
+      "height": 512,
+      "steps": 20,
+      "guidance": 7.5,
+      "prompt": "A detailed anime illustration of a girl in a flowing dress",
+      "capabilities": ["txt2img", "cli"]
     }
   },
   "controlnet": {
