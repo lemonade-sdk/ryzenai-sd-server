@@ -1,0 +1,4 @@
+# Requirements for test/lemonade_integration (see README.md).
+requests>=2.31.0
+Pillow>=10.0.0
+numpy>=1.24.0

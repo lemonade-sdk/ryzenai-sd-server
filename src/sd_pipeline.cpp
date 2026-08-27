@@ -967,7 +967,11 @@ std::vector<float> SDPipeline::encode_image_to_latents(
     for (auto& n : input_names) input_name_ptrs.push_back(n.c_str());
     for (auto& n : output_names) output_name_ptrs.push_back(n.c_str());
 
+    auto t0 = std::chrono::high_resolution_clock::now();
     auto outputs = vae_encoder->run(inputs, input_name_ptrs, output_name_ptrs);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    auto encode_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    std::cout << "  VAE encode: " << encode_ms << " ms" << std::endl;
 
     if (outputs.empty()) {
         std::cout << "  WARNING: VAE encoder produced no output" << std::endl;
