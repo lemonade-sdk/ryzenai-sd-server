@@ -7,7 +7,7 @@
 
 #include "variant_registry.h"
 #include "variants/flux_text_encoder.h"
-#include "variants/flux_vae_decoder.h"
+#include "variants/generic_vae_decoder.h"
 #include "variants/flux2_text_encoder.h"
 #include "variants/flux2_denoiser.h"
 #include "variants/flux2_vae_decoder.h"
@@ -134,7 +134,7 @@ static VariantDescriptor make_flux1_schnell_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<FluxVaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 0.3611f, 0.1159f, 16, "FLUX");
     };
 
     return d;

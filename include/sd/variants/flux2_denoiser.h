@@ -54,6 +54,23 @@ public:
     // 128 * (H/16) * (W/16), which holds when latent_channels() == 32.
     int latent_channels() const override { return 32; }
 
+    // img2img: forward-transform raw VAE latents [32, H/8, W/8] into the
+    // packed [128, H/16, W/16], BatchNorm-normalized token space that
+    // denoise() actually operates on. This is the exact inverse of the
+    // unpatchify + BatchNorm-denorm performed at the end of denoise() (see
+    // steps 6-7 there), applied in reverse order: patchify first (this is
+    // the space-varying step), then normalize.
+    std::vector<float> prepare_img2img_latents(
+        const std::vector<float>& vae_latents,
+        int height, int width) const override;
+
+    // img2img: expose our own internal dynamic-shift sigma schedule so the
+    // pipeline blends noise using the SAME sigma denoise() will integrate
+    // from internally, instead of the generic Scheduler's (mismatched) value.
+    bool has_custom_img2img_sigma() const override { return true; }
+    float img2img_start_sigma(int start_step, int total_steps,
+                               int height, int width) const override;
+
 private:
     OnnxModel* model_ = nullptr;
     int text_seq_len_   = 256;
@@ -65,6 +82,9 @@ private:
     std::vector<float> bn_std_;   // sqrt(running_var + batch_norm_eps)
 
     static double compute_empirical_mu(int image_seq_len, int num_steps);
+    // Full N+1 sigma schedule (dynamic-shifting flow-match), shared by
+    // denoise() and img2img_start_sigma() so both use identical values.
+    static std::vector<float> compute_sigma_schedule(int image_seq_len, int num_steps);
     void load_bn_stats(const std::string& model_root);
 };
 

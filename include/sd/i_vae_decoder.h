@@ -28,6 +28,10 @@ public:
 
     /// VAE latent scaling factor (0.18215 for SD1.5/SDXL, 1.5305 for SD3)
     virtual float latent_scaling_factor() const = 0;
+
+    /// VAE latent shift factor, applied before scaling on decode / after
+    /// un-scaling on encode (0.0 for SD1.5/SDXL, 0.0609 for SD3, 0.1159 for FLUX)
+    virtual float latent_shift_factor() const { return 0.0f; }
 };
 
 } // namespace sd_npu

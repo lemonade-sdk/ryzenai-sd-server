@@ -3,7 +3,7 @@
 
 #include "variant_registry.h"
 #include "variants/sd3_text_encoder.h"
-#include "variants/sd3_vae_decoder.h"
+#include "variants/generic_vae_decoder.h"
 #include "variants/generic_denoiser.h"
 
 namespace sd_npu {
@@ -83,7 +83,7 @@ static VariantDescriptor make_sd3_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<SD3VaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 1.5305f, 0.0609f, 16, "SD3");
     };
 
     return d;
@@ -165,7 +165,7 @@ static VariantDescriptor make_sd35_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<SD3VaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 1.5305f, 0.0609f, 16, "SD3.5");
     };
 
     return d;

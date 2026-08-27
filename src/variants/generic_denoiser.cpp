@@ -289,11 +289,21 @@ std::vector<float> GenericDenoiser::denoise(
     int latent_w = (sample_shape.size() >= 4 && sample_shape[3] > 0)
                        ? static_cast<int>(sample_shape[3]) : config.width / 8;
 
-    // CFG: double the batch (uncond + cond) when guidance is active.
+    // CFG: double the batch (uncond + cond) whenever the text encoder actually
+    // produced both halves. The NPU-compiled (DD) UNet/transformer binaries are
+    // compiled for a fixed batch layout matching what the encoder emits, so the
+    // decision must track the embeddings' actual batch — not guidance_scale —
+    // otherwise low/zero guidance values (e.g. lightning checkpoints defaulting
+    // to guidance=1.0, or ControlNet types requiring guidance=0.0) mismatch the
+    // compiled shape and crash the NPU execution provider.
     // FLUX distilled models (schnell/klein) are guidance-distilled: the text
     // encoder emits a single batch and the transformer has no guidance input,
     // so classifier-free guidance must never double the batch here.
-    int batch = (!spec_.disable_cfg && config.guidance_scale > 1.0f) ? 2 : 1;
+    const size_t single_emb = (spec_.seq_len > 0 && spec_.embed_dim > 0)
+        ? static_cast<size_t>(spec_.seq_len) * spec_.embed_dim : 0;
+    const bool encoder_gave_two_batch =
+        single_emb > 0 && text_embeddings.size() == 2 * single_emb;
+    int batch = (!spec_.disable_cfg && encoder_gave_two_batch) ? 2 : 1;
 
     scheduler.set_timesteps(config.num_inference_steps);
     const auto& timesteps = scheduler.timesteps();
@@ -319,6 +329,16 @@ std::vector<float> GenericDenoiser::denoise(
 
     std::vector<float> text_emb = text_embeddings;
     std::vector<float> pooled = pooled_embeddings;
+
+    // If, despite the above, the encoder emitted two batches but CFG was
+    // disabled (spec_.disable_cfg), keep only the conditional (second) half so
+    // the single-batch model still gets a valid input.
+    if (batch == 1 && encoder_gave_two_batch) {
+        text_emb.assign(text_emb.begin() + single_emb, text_emb.end());
+        if (spec_.pool_dim > 0 && pooled.size() == 2 * static_cast<size_t>(spec_.pool_dim)) {
+            pooled.assign(pooled.begin() + spec_.pool_dim, pooled.end());
+        }
+    }
 
     for (int step = start_step; step < config.num_inference_steps; step++) {
         auto t0 = std::chrono::high_resolution_clock::now();
@@ -417,8 +437,12 @@ std::vector<float> GenericDenoiser::denoise(
             noise_pred_f32 = std::move(unpacked);
         }
 
-        // Classifier-Free Guidance.
-        if (config.guidance_scale > 1.0f && out_shape[0] >= 2) {
+        // Classifier-Free Guidance. Gated on the actual output batch (not
+        // guidance_scale) since batch==2 whenever the encoder provided both
+        // uncond+cond halves (see encoder_gave_two_batch above); this keeps
+        // the blend correct even when guidance_scale <= 1.0 (e.g. guidance=1.0
+        // reduces to pure "cond", guidance=0.0 reduces to pure "uncond").
+        if (out_shape[0] >= 2) {
             for (size_t i = 0; i < single_size; i++) {
                 float uncond = noise_pred_f32[i];
                 float cond = noise_pred_f32[single_size + i];

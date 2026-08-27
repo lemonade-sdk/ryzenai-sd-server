@@ -11,6 +11,7 @@
 #include "http_server.h"
 #include "config_loader.h"
 #include "variant_registry.h"
+#include "stb_image.h"
 #include <iostream>
 #include <algorithm>
 #include <cstdlib>
@@ -536,6 +537,46 @@ int main(int argc, char** argv) {
         auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
         std::cout << "Pipeline ready (" << load_ms << " ms)\n";
 
+        // Load control image / mask from disk (forced to RGB) so --control-image
+        // and --control-mask actually reach the pipeline for ControlNet requests.
+        // (stb_image is compiled with STBI_NO_STDIO in http_server.cpp, so file
+        // reading is done manually here and decoded via stbi_load_from_memory.)
+        auto load_rgb_file = [](const std::string& path, int expect_w, int expect_h,
+                                 const char* label) -> std::vector<uint8_t> {
+            std::ifstream f(path, std::ios::binary);
+            if (!f) {
+                std::cerr << "Warning: failed to open " << label << ": " << path << "\n";
+                return {};
+            }
+            std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+
+            int w = 0, h = 0, channels = 0;
+            unsigned char* pixels = stbi_load_from_memory(
+                bytes.data(), static_cast<int>(bytes.size()), &w, &h, &channels, 3);
+            if (!pixels) {
+                std::cerr << "Warning: failed to decode " << label << " (PNG expected): " << path << "\n";
+                return {};
+            }
+            std::vector<uint8_t> rgb(pixels, pixels + static_cast<size_t>(w) * h * 3);
+            stbi_image_free(pixels);
+            std::cout << "Loaded " << label << ": " << w << "x" << h << "\n";
+            if (w != expect_w || h != expect_h) {
+                std::cout << "  WARNING: " << label << " size (" << w << "x" << h
+                          << ") does not match generation size (" << expect_w << "x" << expect_h
+                          << "); results may be incorrect.\n";
+            }
+            return rgb;
+        };
+
+        std::vector<uint8_t> control_rgb;
+        std::vector<uint8_t> control_mask_rgb;
+        if (!config.control_image_path.empty()) {
+            control_rgb = load_rgb_file(config.control_image_path, config.width, config.height, "control image");
+        }
+        if (!config.control_mask_path.empty()) {
+            control_mask_rgb = load_rgb_file(config.control_mask_path, config.width, config.height, "control mask");
+        }
+
         for (int img = 0; img < args.num_images; img++) {
             // Per-image seed
             config.seed = args.seed + img;
@@ -551,7 +592,7 @@ int main(int argc, char** argv) {
 
             std::cout << "\n── Image " << (img + 1) << "/" << args.num_images << " ──\n";
             auto gen_start = std::chrono::high_resolution_clock::now();
-            auto response = pipeline.generate(args.prompt, args.negative_prompt);
+            auto response = pipeline.generate(args.prompt, args.negative_prompt, control_rgb, control_mask_rgb);
             auto gen_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::high_resolution_clock::now() - gen_start).count();
 

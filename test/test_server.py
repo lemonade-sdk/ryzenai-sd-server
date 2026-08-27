@@ -2,7 +2,7 @@
 """
 Unified test runner for ryzenai-sd-server.
 
-Supports txt2img, img2img, controlnet, and CLI modes.
+Supports txt2img, img2img, variations, controlnet, and CLI modes.
 Model parameters are data-driven from models.json — no per-model if/else logic.
 
 Usage:
@@ -15,8 +15,16 @@ Usage:
     # Test all models (auto-launches server per model):
     python test_server.py txt2img --all-models
 
-    # img2img (needs VAE encoder):
+    # img2img (needs VAE encoder). All models use the SAME source input image
+    # (test_server/img2img_test_input.png by default, or --input-image), each
+    # resized to that model's own resolution — so results are comparable:
     python test_server.py img2img --all-models
+    python test_server.py img2img --all-models --input-image C:/photos/reference.png
+
+    # variations: same idea, but hits /v1/images/variations WITHOUT a prompt
+    # (true OpenAI-style unprompted image variation, vs. img2img's prompt-
+    # guided mode):
+    python test_server.py variations --all-models
 
     # ControlNet (only runs on models that declare controlnet capability):
     python test_server.py controlnet --all-models
@@ -45,10 +53,12 @@ from PIL import Image
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
+import os
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 MODELS_JSON = SCRIPT_DIR / "models.json"
-DEFAULT_MODELS_DIR = Path(r"C:\Users\mickraus\Work\rai_1.8.0_models")
+DEFAULT_MODELS_DIR = Path(os.environ.get("RAI_SD_MODELS_DIR", r"C:\Users\mickraus\Work\rai_1.8.0_models"))
 OUTPUT_DIR = PROJECT_ROOT / "test_outputs"
 
 
@@ -60,12 +70,25 @@ def load_config():
         return json.load(f)
 
 
-def get_model_config(config, model_name):
-    """Get merged config for a model (model-specific values override defaults)."""
+def get_model_config(config, model_name, args=None):
+    """Get merged config for a model (model-specific values override defaults).
+
+    If `args` is given, --seed/--steps/--guidance/--prompt CLI overrides
+    (when set) take precedence over both defaults and the model's own config.
+    """
     defaults = config["defaults"].copy()
     model_cfg = config["models"].get(model_name)
     if model_cfg:
         defaults.update(model_cfg)
+    if args is not None:
+        if args.seed is not None:
+            defaults["seed"] = args.seed
+        if args.steps is not None:
+            defaults["steps"] = args.steps
+        if args.guidance is not None:
+            defaults["guidance"] = args.guidance
+        if args.prompt is not None:
+            defaults["prompt"] = args.prompt
     return defaults
 
 
@@ -97,14 +120,17 @@ def discover_models(models_dir, mode, config):
         print(f"ERROR: No models found in {models_dir} or HF cache")
         sys.exit(1)
 
-    # Filter to models that support this mode
+    # Filter to models that support this mode.
+    # "variations" reuses the "img2img" capability tag in models.json — both
+    # need the same vae_encoder; they only differ in whether a prompt is sent.
+    required_capability = "img2img" if mode == "variations" else mode
     result = []
     for name in sorted(found_names):
         model_cfg = config["models"].get(name)
         if model_cfg is None:
             if mode in ("txt2img", "cli"):
                 result.append(name)
-        elif mode in model_cfg.get("capabilities", []):
+        elif required_capability in model_cfg.get("capabilities", []):
             result.append(name)
 
     return result
@@ -302,6 +328,39 @@ def save_response_image(response_json, output_path):
     return output_path
 
 
+# ─── Shared img2img/variations Input Image ──────────────────────────────────
+
+DEFAULT_INPUT_IMAGE = SCRIPT_DIR / "img2img_test_input.png"
+
+
+def resolve_shared_input_image(args) -> Path:
+    """Resolve the ONE source image used for every model in an img2img/variations
+    run, so outputs are directly comparable across models (each model just
+    resizes this same source to its own resolution).
+
+    Priority:
+      1. --input-image CLI override (must exist on disk).
+      2. The cached default at test/img2img_test_input.png, reused across runs
+         if already present.
+      3. A freshly generated, deterministically-seeded synthetic image, saved
+         to the cache path so this run (and future ones) reuse the same image.
+    """
+    if args.input_image:
+        path = Path(args.input_image)
+        if not path.exists():
+            raise FileNotFoundError(f"--input-image not found: {path}")
+        return path
+
+    if DEFAULT_INPUT_IMAGE.exists():
+        return DEFAULT_INPUT_IMAGE
+
+    print(f"  No shared input image found — generating a synthetic one at {DEFAULT_INPUT_IMAGE}")
+    rng = np.random.default_rng(0)
+    arr = rng.integers(0, 255, (1024, 1024, 3), dtype=np.uint8)
+    Image.fromarray(arr).save(str(DEFAULT_INPUT_IMAGE))
+    return DEFAULT_INPUT_IMAGE
+
+
 # ─── Test Modes ──────────────────────────────────────────────────────────────
 
 def test_txt2img(url, model_cfg, output_path):
@@ -337,8 +396,14 @@ def test_txt2img(url, model_cfg, output_path):
         return False, str(e)
 
 
-def test_img2img(url, model_cfg, model_path, output_path):
-    """Run an img2img generation test. Returns (success, detail)."""
+def test_img2img(url, model_cfg, model_path, output_path, ref_image_path):
+    """Run a prompt-guided img2img generation test (POSTs the model's prompt
+    alongside the image to /v1/images/variations). Returns (success, detail).
+
+    `ref_image_path` is the ONE shared source image used for every model in
+    this run (see resolve_shared_input_image) — resized here to this model's
+    own resolution so different-resolution models remain comparable.
+    """
     w, h = model_cfg["width"], model_cfg["height"]
     vae_encoder = model_cfg.get("vae_encoder")
     if not vae_encoder:
@@ -348,15 +413,8 @@ def test_img2img(url, model_cfg, model_path, output_path):
     if not vae_path.exists():
         return False, f"VAE encoder not found: {vae_path}"
 
-    # Use the test input image (or generate a synthetic one)
-    input_image = SCRIPT_DIR / "img2img_test_input.png"
-    if not input_image.exists():
-        # Create a simple synthetic input
-        arr = np.random.randint(0, 255, (h, w, 3), dtype=np.uint8)
-        Image.fromarray(arr).save(str(input_image))
-
     # Load, resize, encode as raw RGB base64
-    ref_img = Image.open(input_image).convert("RGB").resize((w, h), Image.LANCZOS)
+    ref_img = Image.open(ref_image_path).convert("RGB").resize((w, h), Image.LANCZOS)
     image_b64 = base64.b64encode(np.array(ref_img).tobytes()).decode()
 
     try:
@@ -367,6 +425,54 @@ def test_img2img(url, model_cfg, model_path, output_path):
                 "size": f"{w}x{h}",
                 "n": "1",
                 "prompt": model_cfg["prompt"],
+                "num_inference_steps": str(model_cfg["steps"]),
+                "guidance_scale": str(model_cfg["guidance"]),
+                "strength": str(model_cfg.get("strength", 0.5)),
+                "seed": str(model_cfg.get("seed", 42)),
+            },
+            timeout=600,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        save_response_image(result, output_path)
+        return True, str(output_path)
+    except requests.exceptions.ConnectionError:
+        return False, f"Cannot connect to {url}"
+    except requests.exceptions.HTTPError as e:
+        return False, f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+    except Exception as e:
+        return False, str(e)
+
+
+def test_variations(url, model_cfg, model_path, output_path, ref_image_path):
+    """Run a true OpenAI-style image-variations test: same endpoint as
+    img2img (/v1/images/variations) but with NO prompt sent, so the server
+    falls back to its unprompted "image variation" default. Returns
+    (success, detail).
+
+    `ref_image_path` is the ONE shared source image used for every model in
+    this run (see resolve_shared_input_image).
+    """
+    w, h = model_cfg["width"], model_cfg["height"]
+    vae_encoder = model_cfg.get("vae_encoder")
+    if not vae_encoder:
+        return False, "No vae_encoder defined for this model"
+
+    vae_path = Path(model_path) / vae_encoder
+    if not vae_path.exists():
+        return False, f"VAE encoder not found: {vae_path}"
+
+    ref_img = Image.open(ref_image_path).convert("RGB").resize((w, h), Image.LANCZOS)
+    image_b64 = base64.b64encode(np.array(ref_img).tobytes()).decode()
+
+    try:
+        resp = requests.post(
+            f"{url}/v1/images/variations",
+            files={"image[]": ("image.bin", image_b64.encode())},
+            data={
+                # Deliberately NO "prompt" field — true unprompted variations.
+                "size": f"{w}x{h}",
+                "n": "1",
                 "num_inference_steps": str(model_cfg["steps"]),
                 "guidance_scale": str(model_cfg["guidance"]),
                 "strength": str(model_cfg.get("strength", 0.5)),
@@ -463,6 +569,56 @@ def test_cli(model_cfg, model_path, output_path):
 
 # ─── Main Runner ─────────────────────────────────────────────────────────────
 
+def _dry_run(args, config, mode):
+    """Print what would be tested without launching servers or requiring model files."""
+    if args.all_models:
+        models_dir = Path(args.models_dir)
+        model_names = discover_models(models_dir, mode, config)
+    elif args.model_path:
+        model_names = [Path(args.model_path).name]
+    else:
+        model_names = [args.model_name or "unknown"]
+
+    print(f"Dry run — mode={mode}  models-dir={args.models_dir}")
+    print(f"Would test {len(model_names)} model(s):\n")
+
+    for model_name in model_names:
+        model_cfg = get_model_config(config, model_name, args)
+        flat_path = Path(args.models_dir) / model_name if args.all_models else Path(args.model_path or "")
+        repo_id = model_cfg.get("hf_repo_id")
+
+        if flat_path.exists():
+            location = f"local: {flat_path}"
+        elif repo_id and get_hf_snapshot_path(repo_id) is not None:
+            location = f"HF cache: {get_hf_snapshot_path(repo_id)}"
+        elif repo_id:
+            location = f"NOT FOUND (would download {repo_id})"
+        else:
+            location = "NOT FOUND (no hf_repo_id)"
+
+        print(f"  {model_name}")
+        print(f"    size={model_cfg['width']}x{model_cfg['height']}  steps={model_cfg['steps']}  "
+              f"guidance={model_cfg['guidance']}  seed={model_cfg.get('seed', 42)}")
+        print(f"    prompt: {model_cfg['prompt']!r}")
+        print(f"    location: {location}")
+
+        if mode == "controlnet":
+            cn_types = args.types or model_cfg.get("controlnet_types", [])
+            if not cn_types:
+                print(f"    controlnet: NONE declared")
+            for cn_type in cn_types:
+                cn_cfg = config["controlnet"].get(cn_type)
+                if not cn_cfg:
+                    print(f"    controlnet[{cn_type}]: UNKNOWN TYPE")
+                    continue
+                image = args.control_image or cn_cfg["image"]
+                image_path = SCRIPT_DIR / image
+                exists = "OK" if image_path.exists() else "MISSING"
+                print(f"    controlnet[{cn_type}]: guidance={cn_cfg['guidance']} steps={cn_cfg['steps']} "
+                      f"conditioning_scale={cn_cfg['conditioning_scale']}  image={image} ({exists})")
+        print()
+
+
 def run_tests(args):
     """Execute tests based on parsed arguments."""
     config = load_config()
@@ -491,10 +647,17 @@ def run_tests(args):
         # Assume server already running, use a placeholder name
         model_names = [args.model_name or "unknown"]
 
+    # img2img/variations: resolve ONE shared source image up front, before the
+    # per-model loop, so every model tests against the exact same picture.
+    ref_image_path = None
+    if mode in ("img2img", "variations"):
+        ref_image_path = resolve_shared_input_image(args)
+        print(f"Using shared input image for all models: {ref_image_path}")
+
     results = []
 
     for model_name in model_names:
-        model_cfg = get_model_config(config, model_name)
+        model_cfg = get_model_config(config, model_name, args)
         # flat_path is used as the first lookup; the resolved path may differ (HF cache)
         flat_path = Path(args.models_dir) / model_name if args.all_models else Path(args.model_path or "")
 
@@ -526,7 +689,11 @@ def run_tests(args):
 
             elif mode == "img2img":
                 output = out_dir / f"{model_name}.png"
-                success, detail = test_img2img(url, model_cfg, model_path, output)
+                success, detail = test_img2img(url, model_cfg, model_path, output, ref_image_path)
+
+            elif mode == "variations":
+                output = out_dir / f"{model_name}.png"
+                success, detail = test_variations(url, model_cfg, model_path, output, ref_image_path)
 
             elif mode == "controlnet":
                 # Run all controlnet types for this model
@@ -595,12 +762,17 @@ def main():
     parser = argparse.ArgumentParser(
         description="""Unified sd_npu_server test runner.
 
-Supports txt2img, img2img, controlnet, and CLI modes.
+Supports txt2img, img2img, variations, controlnet, and CLI modes.
 Model parameters are data-driven from models.json — no per-model if/else logic.
 
 Modes:
   txt2img      Generate an image from a text prompt via the server API.
-  img2img      Transform an input image via the server API (requires VAE encoder).
+  img2img      Prompt-guided image-to-image via the server API (requires VAE
+               encoder). All models tested use the SAME source input image
+               (see --input-image), each resized to its own resolution.
+  variations   Unprompted image variations (same endpoint as img2img, but NO
+               prompt sent) — true OpenAI-style /v1/images/variations. Also
+               uses the SAME shared source image across all models.
   controlnet   Generate with ControlNet guidance (canny, pose, tile, depth).
   cli          Run the executable directly (one-shot, no server).
 
@@ -621,8 +793,13 @@ Examples:
   # Test all models (auto-launches server per model):
   python test_server.py txt2img --all-models
 
-  # img2img for all models that have a VAE encoder:
+  # img2img for all models that have a VAE encoder (all use the same source
+  # image, so results are directly comparable):
   python test_server.py img2img --all-models
+  python test_server.py img2img --all-models --input-image C:/photos/reference.png
+
+  # Unprompted image variations (no text prompt sent):
+  python test_server.py variations --all-models
 
   # ControlNet — only specific types:
   python test_server.py controlnet --all-models --types canny depth
@@ -641,8 +818,8 @@ Notes:
 
     parser.add_argument(
         "mode",
-        choices=["txt2img", "img2img", "controlnet", "cli"],
-        help="Test mode to run (required). One of: txt2img, img2img, controlnet, cli. "
+        choices=["txt2img", "img2img", "variations", "controlnet", "cli"],
+        help="Test mode to run (required). One of: txt2img, img2img, variations, controlnet, cli. "
              "Example: python test_server.py txt2img --all-models",
     )
 
@@ -666,6 +843,13 @@ Notes:
     # ControlNet-specific
     parser.add_argument("--types", nargs="+", help="ControlNet types to test (default: all for model)")
     parser.add_argument("--control-image", help="Override control image path (applies to all types being tested)")
+
+    # img2img/variations-specific
+    parser.add_argument(
+        "--input-image",
+        help="Source image for img2img/variations modes (applies to ALL models tested, each resized to its "
+             "own resolution). Default: test/img2img_test_input.png (auto-generated once if missing).",
+    )
 
     # Dry run
     parser.add_argument(

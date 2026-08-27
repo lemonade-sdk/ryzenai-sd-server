@@ -98,14 +98,11 @@ set(SOURCES
     src/controlnet_runner.cpp
     # Variant implementations
     src/variants/generic_denoiser.cpp    # unified denoiser for SD1.5 / SDXL / SD3
+    src/variants/generic_vae_decoder.cpp # unified VAE decoder for SD1.5 / SDXL / SD3 / FLUX
     src/variants/sd15_text_encoder.cpp
-    src/variants/sd15_vae_decoder.cpp
     src/variants/sdxl_text_encoder.cpp
-    src/variants/sdxl_vae_decoder.cpp
     src/variants/sd3_text_encoder.cpp
-    src/variants/sd3_vae_decoder.cpp
     src/variants/flux_text_encoder.cpp
-    src/variants/flux_vae_decoder.cpp
     src/variants/flux2_text_encoder.cpp
     src/variants/flux2_denoiser.cpp
     src/variants/flux2_vae_decoder.cpp

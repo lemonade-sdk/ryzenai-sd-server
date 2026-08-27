@@ -12,7 +12,7 @@ pipeline on AMD Ryzen AI NPU hardware.
 Key Features:
 
 - **OpenAI API Compatible**: `/v1/images/generations`, `/v1/images/edits`, `/v1/images/variations`
-- **Multi-Architecture**: SD 1.5, SDXL, SD3, SD3.5 with auto-detection
+- **Multi-Architecture**: SD 1.5, SDXL (+ derivatives), SD3, SD3.5, FLUX with auto-detection
 - **ControlNet Support**: Canny, Pose, Tile, Depth, and more
 - **CLI & Server Modes**: One-shot generation or persistent HTTP server
 - **Minimal Dependencies**: Single executable + DLLs
@@ -23,13 +23,20 @@ Key Features:
 | Model | Variant | Default Resolution | Steps | Guidance |
 |---|---|---|---|---|
 | SD 1.5 | `sd15` | 512×512 | 20 | 7.5 |
-| SD Turbo | `sd15` (turbo) | 512×512 | 1 | 0.0 |
-| SDXL Base 1.0 | `sdxl` | 1024×1024 | 20 | 7.5 |
-| SDXL Turbo | `sdxl` (turbo) | 512×512 | 1 | 0.0 |
+| SD Turbo | `sd-turbo` | 512×512 | 1 | 0.0 |
+| SDXL Base 1.0 | `sdxl` | 1024×1024 | 20 | 5.0 |
+| SDXL Turbo | `sdxl-turbo` | 512×512 | 4 | 0.0 |
+| Segmind Vega | `sdxl` (segmind-vega alias) | 1024×1024 | 20 | 5.0 |
+| Playground v2.5 | `playground-v25` | 1024×1024 | 20 | 3.0 |
+| Dreamshaper XL Lightning | `dreamshaper-xl-lightning` | 1024×1024 | 4 | 1.0 |
+| SSD-1B | `ssd-1b` | 1024×1024 | 20 | 5.0 |
 | SD3 Medium | `sd3` | 1024×1024 | 28 | 7.0 |
 | SD3.5 Medium | `sd35` | 1024×1024 | 28 | 4.5 |
+| FLUX.1-schnell | `flux1-schnell` | 1024×1024 | 4 | 0.0 (distilled, no CFG) |
+| FLUX.2-klein | `flux2-klein` | 1024×1024 | 20 | 0.0 (distilled, no CFG) |
 
-The variant is **auto-detected** from the model directory structure.
+The variant is **auto-detected** from the model directory structure. SD3 Medium
+additionally supports **ControlNet** (Canny, Pose, Tile, Depth).
 
 ## Building from Source
 
@@ -41,7 +48,7 @@ Windows Requirements:
 - Visual Studio 2022
 - CMake 3.20 or higher
 - ONNX Runtime library (`onnxruntime.lib` / `onnxruntime.dll`)
-  - Typically from Ryzen AI SDK at `C:\Program Files\RyzenAI\1.7.1\onnxruntime\lib`
+  - Typically from Ryzen AI SDK at `C:\Program Files\RyzenAI\1.8.0\onnxruntime\lib`
   - ONNX Runtime headers are already vendored in the repo — no SDK needed for compilation
 
 Hardware Requirements:
@@ -134,7 +141,7 @@ custom ops, DynamicDispatch runtime):
 
 ```cmd
 cmake .. -G "Visual Studio 17 2022" -A x64 ^
-  -DRUNTIME_DLLS_DIR="C:\Program Files\RyzenAI\1.7.1\deployment"
+  -DRUNTIME_DLLS_DIR="C:\Program Files\RyzenAI\1.8.0\deployment"
 cmake --build . --config Release
 ```
 
@@ -142,7 +149,7 @@ To deploy a full directory tree (preserving subdirectory structure):
 
 ```cmd
 cmake .. -G "Visual Studio 17 2022" -A x64 ^
-  -DLIB_DIRECTORY="C:\Program Files\RyzenAI\1.7.1\GenAI-SD\lib"
+  -DLIB_DIRECTORY="C:\Program Files\RyzenAI\1.8.0\GenAI-SD\lib"
 cmake --build . --config Release
 ```
 
@@ -194,9 +201,12 @@ ryzenai-sd-server/
 │   └── ...
 │
 ├── test/                       # Test scripts
-│   ├── test_server.py          # Server test runner
-│   ├── models.json             # Model test configurations
-│   └── requirements.txt        # Python test dependencies
+│   ├── test_server.py          # Unified test runner (txt2img/img2img/variations/controlnet/cli)
+│   ├── models.json             # Model test configurations (data-driven, no per-model code)
+│   ├── requirements.txt        # Python test dependencies
+│   ├── img2img_test_input.png  # Shared source image for img2img/variations
+│   ├── controlnet_images/      # Control images for ControlNet tests
+│   └── README.md               # Full test harness documentation
 │
 └── external/                   # Header-only dependencies
     └── cpp-httplib/            # HTTP server (auto-downloaded)
@@ -270,7 +280,8 @@ ryzenai-sd-server.exe --server -m C:\path\to\onnx\model --port 8080
 - `-g, --guidance-scale FLOAT` - CFG scale (auto per variant)
 - `-W WIDTH` / `-H HEIGHT` - Image dimensions
 - `-s, --seed INT` - Random seed (default: 0)
-- `-v, --variant NAME` - Model variant: sd15, sdxl, sd3, sd35 (auto-detected)
+- `-v, --variant NAME` - Model variant: sd15, sd-turbo, sdxl, sdxl-turbo, sd3, sd35,
+  playground-v25, dreamshaper-xl-lightning, ssd-1b, flux1-schnell, flux2-klein (auto-detected)
 - `-C, --controlnet TYPE` - ControlNet type: Canny, Pose, Tile, Depth, etc.
 - `--force-cpu` - Force CPU execution provider
 - `-h, --help` - Show help message
@@ -309,7 +320,19 @@ python test_server.py txt2img --model-path C:\path\to\model
 
 # Test all models
 python test_server.py txt2img --all-models
+
+# Unprompted image variations, ControlNet, and CLI-only modes are also supported:
+python test_server.py variations --all-models
+python test_server.py controlnet --all-models --types canny depth
+python test_server.py cli --all-models
 ```
+
+`test_server.py` is a single, data-driven runner covering `txt2img`,
+`img2img`, `variations`, `controlnet`, and `cli` modes against every model
+listed in `test/models.json` (auto-downloading from the HuggingFace cache if
+needed). See [test/README.md](test/README.md) for the full flag reference,
+output format, and known coverage gaps (e.g. mask-aware ControlNet
+inpainting/outpainting isn't yet exercised by this harness).
 
 ## Integration with Lemonade Server
 

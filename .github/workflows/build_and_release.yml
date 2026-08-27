@@ -224,19 +224,22 @@ jobs:
           }
 
           # Model mapping: local directory name → HuggingFace repo ID
+          # Keep in sync with the hf_repo_id entries in test/models.json.
           $modelMap = @{
-              "stable-diffusion-turbo-amdnpu-onnx" = "amd/stable-diffusion-turbo-amdnpu-onnx"
+              "sd-turbo-amdnpu-onnx" = "amd/sd-turbo-amdnpu-onnx"
               "stable-diffusion-1.5-amdnpu-onnx" = "amd/stable-diffusion-1.5-amdnpu-onnx"
-              "stable-diffusion-sdxl-turbo-amdnpu-onnx" = "amd/stable-diffusion-sdxl-turbo-amdnpu-onnx"
-              "stable-diffusion-sdxl-base-amdnpu-onnx" = "amd/stable-diffusion-sdxl-base-amdnpu-onnx"
+              "sdxl-turbo-amdnpu-onnx" = "amd/sdxl-turbo-amdnpu-onnx"
+              "sdxl-base-amdnpu-onnx" = "amd/sdxl-base-amdnpu-onnx"
               "stable-diffusion-3-medium-amdnpu-onnx" = "amd/stable-diffusion-3-medium-amdnpu-onnx"
               "stable-diffusion-3.5-medium-amdnpu-onnx" = "amd/stable-diffusion-3.5-medium-amdnpu-onnx"
-              "stable-diffusion-segmind-vega-amdnpu-onnx" = "amd/stable-diffusion-segmind-vega-amdnpu-onnx"
+              "segmind-vega-amdnpu-onnx" = "amd/segmind-vega-amdnpu-onnx"
+              "FLUX.1-schnell-amdnpu-onnx" = "amd/FLUX.1-schnell-amdnpu-onnx"
+              "FLUX.2-klein-amdnpu-onnx" = "amd/FLUX.2-klein-amdnpu-onnx"
           }
 
           # For CI smoke test, only test the fastest model (turbo, 1 step).
           # To test all models, replace this with: $modelsToTest = $modelMap.Keys
-          $modelsToTest = @("stable-diffusion-turbo-amdnpu-onnx")
+          $modelsToTest = @("sd-turbo-amdnpu-onnx")
 
           $modelsDir = "${{ github.workspace }}/test_models"
           $logDir = "${{ github.workspace }}/test_logs"
@@ -380,7 +383,7 @@ jobs:
 
             ### Supported Models
 
-            SD 1.5, SD Turbo, SDXL, SDXL Turbo, SD3 Medium, SD3.5 Medium, FLUX.1-schnell, FLUX.2-klein — auto-detected from model directory.
+            SD 1.5, SD Turbo, SDXL, SDXL Turbo, SD3 Medium, SD3.5 Medium, Segmind Vega, Playground v2.5, Dreamshaper XL Lightning, SSD-1B, FLUX.1-schnell, FLUX.2-klein — auto-detected from model directory.
 
             See the [README](https://github.com/lemonade-sdk/ryzenai-sd-server#readme) for full documentation.
           files: ryzenai-sd-server.zip

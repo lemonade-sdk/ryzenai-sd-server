@@ -37,7 +37,8 @@ public:
     ImageResponse generate(
         const std::string& prompt,
         const std::string& negative_prompt = "",
-        const std::vector<uint8_t>& control_image = {});
+        const std::vector<uint8_t>& control_image = {},
+        const std::vector<uint8_t>& control_mask = {});
 
     /// Get timing from the last generate() call.
     const GenerationTiming& last_timing() const { return last_timing_; }
@@ -63,7 +64,8 @@ private:
         const std::vector<float>& controlnet_cond = {});
 
     // ── ControlNet ────────────────────────────────────────────
-    std::vector<float> process_control_image(const std::vector<uint8_t>& image);
+    std::vector<float> process_control_image(const std::vector<uint8_t>& image,
+                                             const std::vector<uint8_t>& mask = {});
 
     // ── Image-to-image support ───────────────────────────────
     std::vector<float> encode_image_to_latents(const std::vector<uint8_t>& rgb_image,

@@ -11,6 +11,7 @@
   },
   "models": {
     "stable-diffusion-1.5-amdnpu-onnx": {
+      "hf_repo_id": "amd/stable-diffusion-1.5-amdnpu-onnx",
       "width": 512,
       "height": 512,
       "steps": 20,
@@ -19,7 +20,8 @@
       "capabilities": ["txt2img", "img2img", "cli"],
       "vae_encoder": "vae_encoder/model.onnx"
     },
-    "stable-diffusion-turbo-amdnpu-onnx": {
+    "sd-turbo-amdnpu-onnx": {
+      "hf_repo_id": "amd/sd-turbo-amdnpu-onnx",
       "width": 512,
       "height": 512,
       "steps": 1,
@@ -28,7 +30,8 @@
       "capabilities": ["txt2img", "img2img", "cli"],
       "vae_encoder": "vae_encoder/model.onnx"
     },
-    "stable-diffusion-sdxl-base-amdnpu-onnx": {
+    "sdxl-base-amdnpu-onnx": {
+      "hf_repo_id": "amd/sdxl-base-amdnpu-onnx",
       "width": 1024,
       "height": 1024,
       "steps": 20,
@@ -37,7 +40,8 @@
       "capabilities": ["txt2img", "img2img", "cli"],
       "vae_encoder": "vae_encoder/model.onnx"
     },
-    "stable-diffusion-sdxl-turbo-amdnpu-onnx": {
+    "sdxl-turbo-amdnpu-onnx": {
+      "hf_repo_id": "amd/sdxl-turbo-amdnpu-onnx",
       "width": 512,
       "height": 512,
       "steps": 1,
@@ -47,6 +51,7 @@
       "vae_encoder": "vae_encoder/model.onnx"
     },
     "stable-diffusion-3-medium-amdnpu-onnx": {
+      "hf_repo_id": "amd/stable-diffusion-3-medium-amdnpu-onnx",
       "width": 1024,
       "height": 1024,
       "steps": 8,
@@ -57,6 +62,7 @@
       "controlnet_types": ["canny", "pose", "tile", "depth"]
     },
     "stable-diffusion-3.5-medium-amdnpu-onnx": {
+      "hf_repo_id": "amd/stable-diffusion-3.5-medium-amdnpu-onnx",
       "width": 1024,
       "height": 1024,
       "steps": 8,
@@ -65,7 +71,8 @@
       "capabilities": ["txt2img", "img2img", "cli"],
       "vae_encoder": "common/vae_encoder/dynamic/dd/replaced.onnx"
     },
-    "stable-diffusion-segmind-vega-amdnpu-onnx": {
+    "segmind-vega-amdnpu-onnx": {
+      "hf_repo_id": "amd/segmind-vega-amdnpu-onnx",
       "width": 1024,
       "height": 1024,
       "steps": 8,
@@ -74,7 +81,7 @@
       "capabilities": ["txt2img", "img2img", "cli"],
       "vae_encoder": "vae_encoder/dd/replaced.onnx"
     },
-    "amd_playground-v2.5-1024px-aesthetic-amdnpu": {
+    "playground-v2.5-1024px-aesthetic-amdnpu-onnx": {
       "width": 1024,
       "height": 1024,
       "steps": 20,
@@ -82,37 +89,43 @@
       "prompt": "A serene mountain landscape at golden hour, photorealistic, highly detailed",
       "capabilities": ["txt2img", "cli"]
     },
-    "amd_dreamshaper-xl-lightning-amdnpu": {
+    "dreamshaper-xl-lightning-amdnpu-onnx": {
       "width": 1024,
       "height": 1024,
       "steps": 4,
       "guidance": 1.0,
       "prompt": "A fantasy warrior in epic armor, cinematic lighting, detailed",
-      "capabilities": ["txt2img", "cli"]
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "vae_encoder/model.onnx"
     },
-    "amd_SSD-1B-amdnpu": {
+    "SSD-1B-amdnpu-onnx": {
       "width": 1024,
       "height": 1024,
       "steps": 20,
       "guidance": 5.0,
       "prompt": "An astronaut riding a green horse on the moon",
-      "capabilities": ["txt2img", "cli"]
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "vae_encoder/model.onnx"
     },
-    "amd_FLUX.1-schnell-amdnpu": {
+    "FLUX.1-schnell-amdnpu-onnx": {
+      "hf_repo_id": "amd/FLUX.1-schnell-amdnpu-onnx",
       "width": 1024,
       "height": 1024,
       "steps": 4,
       "guidance": 0.0,
       "prompt": "A capybara sitting in a field of sunflowers, photorealistic",
-      "capabilities": ["txt2img", "cli"]
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "vae_encoder/model.onnx"
     },
-    "amd_FLUX.2-klein-4B-amdnpu": {
+    "FLUX.2-klein-amdnpu-onnx": {
+      "hf_repo_id": "amd/FLUX.2-klein-amdnpu-onnx",
       "width": 1024,
       "height": 1024,
       "steps": 20,
       "guidance": 0.0,
       "prompt": "A futuristic cityscape at night with neon lights",
-      "capabilities": ["txt2img", "cli"]
+      "capabilities": ["txt2img", "img2img", "cli"],
+      "vae_encoder": "vae_encoder/model.onnx"
     },
     "amd_sd1.5-controlnet-canny-amdnpu": {
       "width": 512,
@@ -138,7 +151,7 @@
       "prompt": "Anime style illustration of a girl wearing a suit. A moon in sky. In the background we see a big rain approaching.",
       "negative_prompt": "NSFW, nude, naked, porn, ugly",
       "conditioning_scale": 0.5,
-      "guidance": 7.0,
+      "guidance": 0.0,
       "seed": 42,
       "steps": 28
     },

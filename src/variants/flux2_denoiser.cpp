@@ -171,6 +171,37 @@ double Flux2Denoiser::compute_empirical_mu(int image_seq_len, int num_steps) {
     return a * num_steps + b;
 }
 
+// Full N+1 dynamic-shifting flow-match sigma schedule. Shared by denoise()
+// (which integrates the ODE using it) and img2img_start_sigma() (which the
+// pipeline needs to correctly noise-blend encoded latents at a given step,
+// since this schedule is NOT the same as the generic Scheduler's).
+std::vector<float> Flux2Denoiser::compute_sigma_schedule(int image_seq_len, int num_steps) {
+    const double mu = compute_empirical_mu(image_seq_len, num_steps);
+    const double emu = std::exp(mu);
+    std::vector<float> sigmas(num_steps + 1);
+    for (int i = 0; i < num_steps; i++) {
+        // linspace(1.0, 1/N, N)
+        double s = (num_steps > 1)
+            ? (1.0 + (1.0 / num_steps - 1.0) * (static_cast<double>(i) / (num_steps - 1)))
+            : 1.0;
+        // exponential time shift: s' = e^mu / (e^mu + (1/s - 1))
+        double shifted = emu / (emu + (1.0 / s - 1.0));
+        sigmas[i] = static_cast<float>(shifted);
+    }
+    sigmas[num_steps] = 0.0f;
+    return sigmas;
+}
+
+float Flux2Denoiser::img2img_start_sigma(int start_step, int total_steps,
+                                          int height, int width) const {
+    const int latH = height / 16;
+    const int latW = width  / 16;
+    const int img_seq = latH * latW;
+    std::vector<float> sigmas = compute_sigma_schedule(img_seq, total_steps);
+    int idx = std::max(0, std::min(start_step, total_steps));
+    return sigmas[idx];
+}
+
 std::vector<float> Flux2Denoiser::denoise(
     const std::vector<float>& latents,
     const std::vector<float>& text_embeddings,
@@ -225,22 +256,18 @@ std::vector<float> Flux2Denoiser::denoise(
     }
 
     // ---- 3. Dynamic-shifting sigma schedule ---------------------------------
-    const double mu = compute_empirical_mu(img_seq, N);
-    const double emu = std::exp(mu);
-    std::vector<float> sigmas(N + 1);
-    for (int i = 0; i < N; i++) {
-        // linspace(1.0, 1/N, N)
-        double s = (N > 1) ? (1.0 + (1.0 / N - 1.0) * (static_cast<double>(i) / (N - 1)))
-                           : 1.0;
-        // exponential time shift: s' = e^mu / (e^mu + (1/s - 1))
-        double shifted = emu / (emu + (1.0 / s - 1.0));
-        sigmas[i] = static_cast<float>(shifted);
-    }
-    sigmas[N] = 0.0f;
+    std::vector<float> sigmas = compute_sigma_schedule(img_seq, N);
 
     std::cout << "  FLUX.2 denoiser: img_seq=" << img_seq << " txt_seq=" << txt_seq
-              << " steps=" << N << " mu=" << mu
-              << " sigma[0]=" << sigmas[0] << " sigma[1]=" << sigmas[1] << std::endl;
+              << " steps=" << N << " sigma[0]=" << sigmas[0]
+              << " sigma[1]=" << sigmas[1] << std::endl;
+
+    // img2img: skip the steps that correspond to noise levels above the
+    // strength-derived starting sigma, exactly like the loop would if it
+    // had started fresh at that point in the schedule.
+    const int loop_start = (config.is_img2img)
+        ? std::max(0, std::min(config.img2img_start_step, N - 1))
+        : 0;
 
     // ---- 4. Denoising loop ---------------------------------------------------
     Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -249,7 +276,7 @@ std::vector<float> Flux2Denoiser::denoise(
 
     std::vector<float> noise_pred(static_cast<size_t>(img_seq) * packed_ch);
 
-    for (int step = 0; step < N; step++) {
+    for (int step = loop_start; step < N; step++) {
         auto t0 = std::chrono::high_resolution_clock::now();
         sc.clear();
 
@@ -372,6 +399,67 @@ std::vector<float> Flux2Denoiser::denoise(
         }
     }
     return result;
+}
+
+// img2img: inverse of the unpack (step 5) + BatchNorm denorm (step 6) done at
+// the end of denoise(). Order is reversed relative to decode: patchify first
+// (raw [32,H/8,W/8] -> packed [128,H/16,W/16]), then BN-normalize in packed
+// space, since the BN stats are only meaningful per packed-channel.
+std::vector<float> Flux2Denoiser::prepare_img2img_latents(
+    const std::vector<float>& vae_latents, int height, int width) const {
+
+    const int latH = height / 16;
+    const int latW = width  / 16;
+    const int packed_ch = 128;
+    const int in_ch = packed_ch / 4;  // 32
+    const int inH = latH * 2;         // H/8
+    const int inW = latW * 2;         // W/8
+
+    if (static_cast<int>(vae_latents.size()) < in_ch * inH * inW) {
+        // Unexpected size; return as-is rather than reading out of bounds.
+        return vae_latents;
+    }
+
+    // ---- Patchify [32, inH, inW] -> [128, latH, latW] ------------------------
+    // Inverse of denoise()'s unpatchify:
+    //   out[c, 2*row+dh, 2*col+dw] = packed[c*4 + dh*2 + dw, row, col]
+    // so: packed[c*4 + dh*2 + dw, row, col] = vae_latents[c, 2*row+dh, 2*col+dw]
+    std::vector<float> packed(static_cast<size_t>(packed_ch) * latH * latW);
+    for (int c = 0; c < in_ch; c++) {
+        for (int row = 0; row < latH; row++) {
+            for (int col = 0; col < latW; col++) {
+                for (int dh = 0; dh < 2; dh++) {
+                    for (int dw = 0; dw < 2; dw++) {
+                        const int pc = c * 4 + dh * 2 + dw;
+                        const size_t src = static_cast<size_t>(c) * inH * inW
+                                         + static_cast<size_t>(row * 2 + dh) * inW
+                                         + (col * 2 + dw);
+                        const size_t dst = static_cast<size_t>(pc) * latH * latW
+                                         + static_cast<size_t>(row) * latW + col;
+                        packed[dst] = vae_latents[src];
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- BatchNorm normalize in packed 128-channel space ---------------------
+    // Inverse of denoise()'s denorm (packed = packed*std + mean):
+    //   packed = (packed - mean) / std
+    if (bn_mean_.size() == static_cast<size_t>(packed_ch) &&
+        bn_std_.size()  == static_cast<size_t>(packed_ch)) {
+        const int img_seq = latH * latW;
+        for (int c = 0; c < packed_ch; c++) {
+            const float sd = bn_std_[c];
+            const float mn = bn_mean_[c];
+            const size_t cbase = static_cast<size_t>(c) * latH * latW;
+            for (int p = 0; p < img_seq; p++) {
+                packed[cbase + p] = (packed[cbase + p] - mn) / sd;
+            }
+        }
+    }
+
+    return packed;
 }
 
 } // namespace sd_npu

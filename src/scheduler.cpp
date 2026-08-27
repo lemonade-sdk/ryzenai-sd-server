@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <stdexcept>
 
 namespace sd_npu {
 
@@ -18,6 +19,11 @@ FlowMatchEulerScheduler::FlowMatchEulerScheduler(float shift, int num_train_time
     : shift_(shift), num_train_timesteps_(num_train_timesteps) {}
 
 void FlowMatchEulerScheduler::set_timesteps(int num_inference_steps) {
+    if (num_inference_steps <= 0) {
+        throw std::invalid_argument(
+            "FlowMatchEulerScheduler::set_timesteps: num_inference_steps must be >= 1 (got "
+            + std::to_string(num_inference_steps) + ")");
+    }
     num_inference_steps_ = num_inference_steps;
     int N = num_inference_steps;
 
@@ -58,6 +64,13 @@ void FlowMatchEulerScheduler::scale_model_input(std::vector<float>& /*latents*/,
 
 void FlowMatchEulerScheduler::step(
     const std::vector<float>& noise_pred, int step, std::vector<float>& latents) {
+    if (noise_pred.size() != latents.size()) {
+        throw std::invalid_argument("FlowMatchEulerScheduler::step: noise_pred/latents size mismatch");
+    }
+    if (step < 0 || step + 1 >= static_cast<int>(sigmas_.size())) {
+        throw std::out_of_range("FlowMatchEulerScheduler::step: step index " + std::to_string(step)
+            + " out of range (schedule has " + std::to_string(sigmas_.size()) + " sigmas)");
+    }
     // sigma_next - sigma (negative, denoising goes from high to 0)
     float dt = sigmas_[step + 1] - sigmas_[step];
     for (size_t i = 0; i < latents.size(); i++) {
@@ -78,6 +91,11 @@ EulerDiscreteScheduler::EulerDiscreteScheduler(
       steps_offset_(steps_offset), timestep_spacing_(timestep_spacing) {}
 
 void EulerDiscreteScheduler::set_timesteps(int num_inference_steps) {
+    if (num_inference_steps <= 0) {
+        throw std::invalid_argument(
+            "EulerDiscreteScheduler::set_timesteps: num_inference_steps must be >= 1 (got "
+            + std::to_string(num_inference_steps) + ")");
+    }
     num_inference_steps_ = num_inference_steps;
     int N = num_inference_steps;
 
@@ -115,11 +133,12 @@ void EulerDiscreteScheduler::set_timesteps(int num_inference_steps) {
         }
     } else if (timestep_spacing_ == "linspace") {
         for (int i = N - 1; i >= 0; i--) {
-            float v = (float)(num_train_timesteps_ - 1) * (float)i / (float)(N - 1 > 0 ? N - 1 : 1);
+            float v = (float)(num_train_timesteps_ - 1) * (float)i / (float)(N > 1 ? N - 1 : 1);
             ts.push_back(v);
         }
     } else {
-        // "leading" (default)
+        // "leading" (default). N is guaranteed >= 1 here (validated above), so
+        // integer division by N is safe.
         int step_ratio = num_train_timesteps_ / N;
         for (int i = N - 1; i >= 0; i--) {
             ts.push_back(std::round((float)i * (float)step_ratio) + (float)steps_offset_);
@@ -171,6 +190,13 @@ void EulerDiscreteScheduler::scale_model_input(std::vector<float>& latents, int 
 
 void EulerDiscreteScheduler::step(
     const std::vector<float>& noise_pred, int step, std::vector<float>& latents) {
+    if (noise_pred.size() != latents.size()) {
+        throw std::invalid_argument("EulerDiscreteScheduler::step: noise_pred/latents size mismatch");
+    }
+    if (step < 0 || step + 1 >= static_cast<int>(sigmas_.size())) {
+        throw std::out_of_range("EulerDiscreteScheduler::step: step index " + std::to_string(step)
+            + " out of range (schedule has " + std::to_string(sigmas_.size()) + " sigmas)");
+    }
     // prev_sample = sample + model_output * (sigma_next - sigma)
     float dt = sigmas_[step + 1] - sigmas_[step];
     for (size_t i = 0; i < latents.size(); i++) {
@@ -205,6 +231,11 @@ void PNDMScheduler::compute_alphas_and_sigmas() {
 }
 
 void PNDMScheduler::set_timesteps(int num_inference_steps) {
+    if (num_inference_steps <= 0) {
+        throw std::invalid_argument(
+            "PNDMScheduler::set_timesteps: num_inference_steps must be >= 1 (got "
+            + std::to_string(num_inference_steps) + ")");
+    }
     num_inference_steps_ = num_inference_steps;
     int N = num_inference_steps;
 
@@ -221,7 +252,7 @@ void PNDMScheduler::set_timesteps(int num_inference_steps) {
     timesteps_.resize(N);
     sigmas_.resize(N + 1);
     for (int i = 0; i < N; i++) {
-        float t_float = ((float)(num_train_timesteps_ - 1) / (float)(N - 1)) * (float)(N - 1 - i);
+        float t_float = ((float)(num_train_timesteps_ - 1) / (float)(N > 1 ? N - 1 : 1)) * (float)(N - 1 - i);
         int t_idx = (int)std::round(t_float);
         if (t_idx < 0) t_idx = 0;
         if (t_idx >= num_train_timesteps_) t_idx = num_train_timesteps_ - 1;
@@ -251,11 +282,24 @@ void PNDMScheduler::reset() {
 
 void PNDMScheduler::step(
     const std::vector<float>& noise_pred, int step, std::vector<float>& latents) {
+    if (noise_pred.size() != latents.size()) {
+        throw std::invalid_argument("PNDMScheduler::step: noise_pred/latents size mismatch");
+    }
+    if (step < 0 || step + 1 >= static_cast<int>(sigmas_.size())) {
+        throw std::out_of_range("PNDMScheduler::step: step index " + std::to_string(step)
+            + " out of range (schedule has " + std::to_string(sigmas_.size()) + " sigmas)");
+    }
 
     size_t size = latents.size();
 
-    if (ets_buffer_[0].empty()) {
-        for (auto& buf : ets_buffer_) buf.resize(size, 0.0f);
+    // Defensively (re)initialize the multi-step buffer if step() is ever
+    // called before set_timesteps()/reset(), or if the latent size changed
+    // between generations without a reset() in between.
+    if (ets_buffer_.size() != 4) {
+        ets_buffer_.assign(4, {});
+    }
+    if (ets_buffer_[0].size() != size) {
+        for (auto& buf : ets_buffer_) buf.assign(size, 0.0f);
     }
 
     // Store current model output in circular buffer

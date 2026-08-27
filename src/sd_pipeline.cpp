@@ -238,7 +238,11 @@ namespace {
 
 SDPipeline::SDPipeline(const SDConfig& config)
     : config_(config),
-      env_(ORT_LOGGING_LEVEL_WARNING, "SDPipeline") {
+      // WARNING-level ORT logging is very noisy on these DD-compiled models
+      // (shape-merge fallback notices, EP-assignment info, deprecated session
+      // option notices) even on fully successful runs -- none of it indicates
+      // a real problem, so default to ERROR to keep normal-operation logs clean.
+      env_(ORT_LOGGING_LEVEL_ERROR, "SDPipeline") {
 
     std::cout << "Initializing SD Pipeline..." << std::endl;
     std::cout << "  Variant: " << variant_to_string(config_.variant) << std::endl;
@@ -505,7 +509,8 @@ void SDPipeline::load_tokenizers() {
 ImageResponse SDPipeline::generate(
     const std::string& prompt,
     const std::string& negative_prompt,
-    const std::vector<uint8_t>& control_image) {
+    const std::vector<uint8_t>& control_image,
+    const std::vector<uint8_t>& control_mask) {
 
     std::cout << "\nGenerating image..." << std::endl;
     std::cout << "Prompt: " << prompt << std::endl;
@@ -569,7 +574,7 @@ ImageResponse SDPipeline::generate(
     
     if (has_controlnet && has_control_image) {
         std::cout << "  Processing control image for ControlNet..." << std::endl;
-        controlnet_cond = process_control_image(control_image);
+        controlnet_cond = process_control_image(control_image, control_mask);
         if (controlnet_cond.empty()) {
             std::cout << "  WARNING: Failed to process control image, continuing without ControlNet" << std::endl;
         } else {
@@ -597,17 +602,62 @@ ImageResponse SDPipeline::generate(
         // Encode input image through VAE encoder to get latents
         auto encoded_latents = encode_image_to_latents(control_image);
 
+        // Forward-transform into whatever space denoise() actually expects
+        // (no-op for most variants; FLUX.2-klein patchifies + BN-normalizes
+        // raw VAE latents into its packed 128-channel token space here).
+        encoded_latents = denoiser_->prepare_img2img_latents(
+            encoded_latents, config_.height, config_.width);
+
         float strength = config_.strength;
         int n_steps = config_.num_inference_steps;
 
-        // start_step: skip the first (1-strength)*N steps, only denoise the last strength*N steps
+        // Distilled few-step ("turbo"/"lightning") models are configured with
+        // a very small num_inference_steps (often 1) for fast txt2img. That
+        // leaves no room to express partial img2img `strength`: start_step
+        // below always clamps to 0, so the noise-blend sigma was always the
+        // maximum noise level regardless of `strength` - the input image's
+        // contribution was completely drowned out by noise, and img2img /
+        // variations effectively degenerated into txt2img. Give img2img
+        // requests enough step resolution to express `strength` meaningfully.
+        // (Naive continuous sigma interpolation without also increasing the
+        // step count was tried and rejected: it desyncs the noise-blend sigma
+        // from the scheduler's per-step sigmas that scale_model_input()/
+        // step() assume, producing numerically incorrect - garbage - output.
+        // Actually bumping num_inference_steps keeps everything internally
+        // consistent, at the cost of a few extra UNet calls for img2img.)
+        //
+        // SD_TURBO is excluded: empirically, its NPU-compiled UNet binary is
+        // only numerically valid at its single native (sigma_max) timestep -
+        // running it across a multi-step schedule (any other sigma) produces
+        // NaN output, unlike SDXL_TURBO/other lightning variants which are
+        // fine with up to ~4 steps. So SD_TURBO keeps the original 1-step
+        // behavior (img2img signal is unavoidably weak for this variant).
+        constexpr int kMinImg2ImgSteps = 4;
+        if (n_steps < kMinImg2ImgSteps && config_.variant != ModelVariant::SD_TURBO) {
+            n_steps = kMinImg2ImgSteps;
+            config_.num_inference_steps = n_steps;
+        }
+
+        // start_step: skip the first (1-strength)*N steps, only denoise the last strength*N
+        // steps. This integer index drives the denoising loop itself (how many UNet calls
+        // actually run) and must stay clamped to a valid step in [0, n_steps-1].
         int start_step = n_steps - static_cast<int>(n_steps * strength);
         start_step = std::max(0, std::min(start_step, n_steps - 1));
 
-        // Set up scheduler to get the sigma value at start_step
-        scheduler_->set_timesteps(n_steps);
-        const auto& sigmas = scheduler_->sigmas();
-        float sigma = sigmas[start_step];
+        // Set up scheduler to get the sigma value at start_step. Some
+        // variants (e.g. FLUX.2-klein) compute their own internal sigma
+        // schedule inside denoise() and ignore this Scheduler entirely -
+        // for those, ask the denoiser for the matching sigma instead so the
+        // noise blend below lines up with what denoise() will integrate from.
+        float sigma;
+        if (denoiser_->has_custom_img2img_sigma()) {
+            sigma = denoiser_->img2img_start_sigma(
+                start_step, n_steps, config_.height, config_.width);
+        } else {
+            scheduler_->set_timesteps(n_steps);
+            const auto& sigmas = scheduler_->sigmas();
+            sigma = sigmas[start_step];
+        }
 
         // Generate noise
         std::mt19937 gen(config_.seed);
@@ -741,7 +791,8 @@ std::vector<float> SDPipeline::denoise(
 // ============================================================================
 
 std::vector<float> SDPipeline::process_control_image(
-    const std::vector<uint8_t>& image) {
+    const std::vector<uint8_t>& image,
+    const std::vector<uint8_t>& mask) {
     std::cout << "Processing control image with " << config_.controlnet_type << std::endl;
     
     // SD3 ControlNet expects control image in LATENT SPACE (16 channels for SD3)
@@ -752,7 +803,75 @@ std::vector<float> SDPipeline::process_control_image(
         std::cerr << "  ERROR: VAE encoder required for SD3 ControlNet but not found!" << std::endl;
         return {};
     }
-    
+
+    ControlNetType cn_type = controlnet_from_string(config_.controlnet_type);
+
+    if (is_inpainting_controlnet(cn_type) && !mask.empty()) {
+        // Mask-aware ControlNet (SD3 ControlNet-Inpainting): condition on
+        // (masked-image latents [16ch] ++ downsampled mask [1ch]) = 17ch,
+        // matching alimama's reference pipeline (prepare_image_with_mask):
+        //   masked_image = image; masked_image[mask > 0.5] = -1 (black)
+        //   image_latents = (vae.encode(masked_image) - shift) * scale
+        //   mask = 1 - nearest_downsample(binarize(mask), latent_size)
+        //   control_image = cat([image_latents, mask], dim=1)
+        std::cout << "  Building mask-aware conditioning (masked-image latents + mask channel)..." << std::endl;
+
+        int w = config_.width;
+        int h = config_.height;
+        size_t expected_size = static_cast<size_t>(w) * h * 3;
+        if (image.size() != expected_size || mask.size() != expected_size) {
+            std::cerr << "  ERROR: control image/mask size mismatch (expected "
+                      << expected_size << " bytes each, got image=" << image.size()
+                      << ", mask=" << mask.size() << ")" << std::endl;
+            return {};
+        }
+
+        // Build the masked image: black out (0,0,0) any pixel whose mask
+        // value is "on" (>127), matching the RGB->[-1,1] normalization that
+        // maps 0 -> -1.0 inside encode_image_to_latents().
+        std::vector<uint8_t> masked_image(image);
+        for (int i = 0; i < w * h; i++) {
+            if (mask[i * 3] > 127) {
+                masked_image[i * 3 + 0] = 0;
+                masked_image[i * 3 + 1] = 0;
+                masked_image[i * 3 + 2] = 0;
+            }
+        }
+
+        std::cout << "  Encoding masked image to latent space via VAE encoder..." << std::endl;
+        // Unlike the plain control-image path below, the masked-image latents
+        // for this ControlNet ARE shift-corrected, per the reference pipeline.
+        auto image_latents = encode_image_to_latents(masked_image, /*apply_shift=*/true);
+        if (image_latents.empty()) {
+            std::cerr << "  ERROR: Failed to encode masked image to latents" << std::endl;
+            return {};
+        }
+
+        int latent_h = h / 8;
+        int latent_w = w / 8;
+
+        // Downsample the mask to latent resolution (nearest-neighbor, matching
+        // torch.nn.functional.interpolate's default mode) and invert so that
+        // 1 = keep original content, 0 = region to inpaint.
+        std::vector<float> mask_latent(static_cast<size_t>(latent_h) * latent_w);
+        for (int ly = 0; ly < latent_h; ly++) {
+            for (int lx = 0; lx < latent_w; lx++) {
+                int sy = ly * 8;
+                int sx = lx * 8;
+                uint8_t mval = mask[(static_cast<size_t>(sy) * w + sx) * 3];
+                mask_latent[static_cast<size_t>(ly) * latent_w + lx] = (mval > 127) ? 0.0f : 1.0f;
+            }
+        }
+
+        std::vector<float> control_cond(image_latents.size() + mask_latent.size());
+        std::copy(image_latents.begin(), image_latents.end(), control_cond.begin());
+        std::copy(mask_latent.begin(), mask_latent.end(), control_cond.begin() + image_latents.size());
+
+        std::cout << "  Mask-aware control conditioning built: " << image_latents.size()
+                  << " image-latent values + " << mask_latent.size() << " mask values" << std::endl;
+        return control_cond;
+    }
+
     std::cout << "  Encoding control image to latent space via VAE encoder..." << std::endl;
     // ControlNet uses latents * scale (no shift subtraction), per HF reference
     auto latent_control = encode_image_to_latents(image, /*apply_shift=*/false);
@@ -781,7 +900,7 @@ std::vector<float> SDPipeline::encode_image_to_latents(
     if (!vae_encoder) {
         std::cout << "  WARNING: No VAE encoder available, returning empty latents" << std::endl;
         // Return zero latents as fallback
-        int latent_ch = is_sd3_family(config_.variant) ? 16 : 4;
+        int latent_ch = denoiser_->latent_channels();
         int latent_h = config_.height / 8;
         int latent_w = config_.width / 8;
         return std::vector<float>(latent_ch * latent_h * latent_w, 0.0f);
@@ -800,7 +919,7 @@ std::vector<float> SDPipeline::encode_image_to_latents(
     if (rgb_image.size() != expected_size) {
         std::cout << "  WARNING: Input image size mismatch. Expected " << expected_size
                   << " but got " << rgb_image.size() << ". Using zero latents." << std::endl;
-        int latent_ch = is_sd3_family(config_.variant) ? 16 : 4;
+        int latent_ch = denoiser_->latent_channels();
         int latent_h = config_.height / 8;
         int latent_w = config_.width / 8;
         return std::vector<float>(latent_ch * latent_h * latent_w, 0.0f);
@@ -858,7 +977,7 @@ std::vector<float> SDPipeline::encode_image_to_latents(
 
     if (outputs.empty()) {
         std::cout << "  WARNING: VAE encoder produced no output" << std::endl;
-        int latent_ch = is_sd3_family(config_.variant) ? 16 : 4;
+        int latent_ch = denoiser_->latent_channels();
         int latent_h = config_.height / 8;
         int latent_w = config_.width / 8;
         return std::vector<float>(latent_ch * latent_h * latent_w, 0.0f);
@@ -886,7 +1005,7 @@ std::vector<float> SDPipeline::encode_image_to_latents(
     // VAE encoder outputs:
     //   - Either mean+log_variance concatenated: [1, 2*latent_ch, H/8, W/8]
     //   - Or already-sampled latents: [1, latent_ch, H/8, W/8]
-    int latent_ch = is_sd3_family(config_.variant) ? 16 : 4;
+    int latent_ch = denoiser_->latent_channels();
     int latent_h = h / 8;
     int latent_w = w / 8;
     size_t latent_size = latent_ch * latent_h * latent_w;
@@ -907,11 +1026,12 @@ std::vector<float> SDPipeline::encode_image_to_latents(
         return std::vector<float>(latent_size, 0.0f);
     }
     
-    // Apply VAE scaling factor.
+    // Apply VAE scaling factor (per-variant, sourced from the loaded VAE decoder
+    // so encode/decode always agree even for models without a hardcoded family).
     // img2img (apply_shift=true):  encode = (raw - shift) * scale  (inverse of decode: raw = latents/scale + shift)
     // ControlNet (apply_shift=false): encode = raw * scale          (per HF ControlNet reference)
-    float scaling_factor = is_sd3_family(config_.variant) ? 1.5305f : 0.18215f;
-    float shift_factor   = (apply_shift && is_sd3_family(config_.variant)) ? 0.0609f : 0.0f;
+    float scaling_factor = vae_decoder_->latent_scaling_factor();
+    float shift_factor   = apply_shift ? vae_decoder_->latent_shift_factor() : 0.0f;
     for (auto& v : latents_sampled) {
         v = (v - shift_factor) * scaling_factor;
     }

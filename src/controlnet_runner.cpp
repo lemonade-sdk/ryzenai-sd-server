@@ -45,8 +45,18 @@ std::vector<std::vector<Ort::Float16_t>> ControlNetRunner::compute(
     }
 
     // 2. controlnet_cond (VAE-encoded control image in latent space) - fp16
-    std::vector<int64_t> cond_shape = {batch, channels, latent_h, latent_w};
-    size_t cond_size = batch * channels * latent_h * latent_w;
+    // Channel count is derived from the actual conditioning buffer rather than
+    // assumed equal to the main latent's `channels`: mask-aware ControlNets
+    // (e.g. SD3 ControlNet-Inpainting) concatenate a 1-channel downsampled
+    // mask onto the 16-channel masked-image latents, producing a 17-channel
+    // cond tensor (extra_conditioning_channels=1 in the model config).
+    size_t cond_hw = static_cast<size_t>(latent_h) * static_cast<size_t>(latent_w);
+    size_t cond_channels = (batch > 0 && cond_hw > 0)
+        ? control_cond.size() / (static_cast<size_t>(batch) * cond_hw)
+        : static_cast<size_t>(channels);
+    if (cond_channels == 0) cond_channels = static_cast<size_t>(channels);
+    std::vector<int64_t> cond_shape = {batch, static_cast<int64_t>(cond_channels), latent_h, latent_w};
+    size_t cond_size = static_cast<size_t>(batch) * cond_channels * cond_hw;
     std::vector<Ort::Float16_t> cond_fp16(cond_size);
     for (size_t i = 0; i < cond_size && i < control_cond.size(); i++) {
         cond_fp16[i] = Ort::Float16_t(control_cond[i]);
@@ -64,12 +74,17 @@ std::vector<std::vector<Ort::Float16_t>> ControlNetRunner::compute(
         emb_fp16[i] = Ort::Float16_t(text_emb[i]);
     }
 
-    // 5. pooled_projections - fp16 (use actual pooled embeddings, not zeros)
+    // 5. pooled_projections - fp16
+    // Mask-aware ControlNets (SD3 ControlNet-Inpainting) are trained with
+    // force_zeros_for_pooled_projection=true and expect an all-zero pooled
+    // projection input regardless of the actual pooled text embeddings.
     std::vector<int64_t> pooled_shape = {batch, pool_dim};
     size_t pooled_size = batch * pool_dim;
     std::vector<Ort::Float16_t> pooled_fp16(pooled_size);
-    for (size_t i = 0; i < pooled_size && i < pooled_emb.size(); i++) {
-        pooled_fp16[i] = Ort::Float16_t(pooled_emb[i]);
+    if (!is_inpainting_controlnet(type_)) {
+        for (size_t i = 0; i < pooled_size && i < pooled_emb.size(); i++) {
+            pooled_fp16[i] = Ort::Float16_t(pooled_emb[i]);
+        }
     }
 
     // 6. timestep - fp16, must match batch dimension (DD models key on all dims)
@@ -81,39 +96,46 @@ std::vector<std::vector<Ort::Float16_t>> ControlNetRunner::compute(
     const auto& input_names = model_->get_input_names();
     std::vector<Ort::Value> inputs;
     std::vector<const char*> input_name_ptrs;
-    
-    std::cout << "  ControlNet inputs:" << std::endl;
+
+    // The input shapes are static for the lifetime of a request (batch/channels/
+    // latent size/seq_len/embed_dim don't change between denoising steps), so
+    // only dump them once instead of on every step to avoid log spam.
+    const bool log_shapes = !logged_shapes_;
+    if (log_shapes) {
+        std::cout << "  ControlNet inputs:" << std::endl;
+    }
     for (const auto& name : input_names) {
         input_name_ptrs.push_back(name.c_str());
         
         if (name == "hidden_states") {
-            std::cout << "    " << name << ": [" << batch << ", " << channels << ", " << latent_h << ", " << latent_w << "]" << std::endl;
+            if (log_shapes) std::cout << "    " << name << ": [" << batch << ", " << channels << ", " << latent_h << ", " << latent_w << "]" << std::endl;
             inputs.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
                 mem, hs_fp16.data(), hs_fp16.size(), hs_shape.data(), hs_shape.size()));
         } else if (name == "controlnet_cond") {
-            std::cout << "    " << name << ": [" << batch << ", " << channels << ", " << latent_h << ", " << latent_w << "]" << std::endl;
+            if (log_shapes) std::cout << "    " << name << ": [" << batch << ", " << cond_channels << ", " << latent_h << ", " << latent_w << "]" << std::endl;
             inputs.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
                 mem, cond_fp16.data(), cond_fp16.size(), cond_shape.data(), cond_shape.size()));
         } else if (name == "conditioning_scale") {
-            std::cout << "    " << name << ": [1]" << std::endl;
+            if (log_shapes) std::cout << "    " << name << ": [1]" << std::endl;
             inputs.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
                 mem, scale_fp16.data(), scale_fp16.size(), scale_shape.data(), scale_shape.size()));
         } else if (name == "encoder_hidden_states") {
-            std::cout << "    " << name << ": [" << batch << ", " << seq_len << ", " << embed_dim << "]" << std::endl;
+            if (log_shapes) std::cout << "    " << name << ": [" << batch << ", " << seq_len << ", " << embed_dim << "]" << std::endl;
             inputs.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
                 mem, emb_fp16.data(), emb_fp16.size(), emb_shape.data(), emb_shape.size()));
         } else if (name == "pooled_projections") {
-            std::cout << "    " << name << ": [" << batch << ", " << pool_dim << "]" << std::endl;
+            if (log_shapes) std::cout << "    " << name << ": [" << batch << ", " << pool_dim << "]" << std::endl;
             inputs.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
                 mem, pooled_fp16.data(), pooled_fp16.size(), pooled_shape.data(), pooled_shape.size()));
         } else if (name == "timestep") {
-            std::cout << "    " << name << ": [" << batch << "]" << std::endl;
+            if (log_shapes) std::cout << "    " << name << ": [" << batch << "]" << std::endl;
             inputs.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
                 mem, ts_fp16.data(), ts_fp16.size(), ts_shape.data(), ts_shape.size()));
         } else {
             std::cerr << "  WARNING: Unknown ControlNet input: " << name << std::endl;
         }
     }
+    logged_shapes_ = true;
 
     // Get output names
     const auto& output_names = model_->get_output_names();
@@ -137,15 +159,14 @@ std::vector<std::vector<Ort::Float16_t>> ControlNetRunner::compute(
     std::vector<std::vector<Ort::Float16_t>> ctrl_fp16_out;
 
     if (num_blocks == 6) {
-        // Duplicate each block to create 12
+        // Legacy SD3 ControlNets (Canny/Pose/Tile/Depth) emit one block per
+        // pair of transformer layers; duplicate each to fill all 12 slots.
         duplicate_blocks(outputs, ctrl_fp16_out);
-    } else if (num_blocks == 12) {
-        // Use blocks directly
-        extract_blocks(outputs, ctrl_fp16_out);
     } else {
-        std::cout << "  ERROR: ControlNet produced " << num_blocks 
-                  << " blocks, but only 6 or 12 are supported" << std::endl;
-        return {};
+        // Otherwise pass the blocks straight through (e.g. mask-aware
+        // ControlNets like SD3-Controlnet-Inpainting emit one block per
+        // transformer layer -- 23 for SD3 Medium's 23-layer MMDiT).
+        extract_blocks(outputs, ctrl_fp16_out);
     }
 
     return ctrl_fp16_out;
@@ -176,9 +197,9 @@ void ControlNetRunner::extract_blocks(
     const std::vector<Ort::Value>& outputs,
     std::vector<std::vector<Ort::Float16_t>>& ctrl_fp16_out) {
 
-    ctrl_fp16_out.resize(12);
-    
-    for (int i = 0; i < 12; i++) {
+    ctrl_fp16_out.resize(outputs.size());
+
+    for (size_t i = 0; i < outputs.size(); i++) {
         auto& block = outputs[i];
         auto shape = block.GetTensorTypeAndShapeInfo().GetShape();
         size_t block_size = 1;

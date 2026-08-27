@@ -3,7 +3,7 @@
 
 #include "variant_registry.h"
 #include "variants/sd15_text_encoder.h"
-#include "variants/sd15_vae_decoder.h"
+#include "variants/generic_vae_decoder.h"
 #include "variants/generic_denoiser.h"
 
 namespace sd_npu {
@@ -69,7 +69,7 @@ static VariantDescriptor make_sd15_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<SD15VaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 0.18215f, 0.0f, 4, "SD1.5");
     };
 
     return d;
@@ -136,7 +136,7 @@ static VariantDescriptor make_sd_turbo_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<SD15VaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 0.18215f, 0.0f, 4, "SD-Turbo");
     };
 
     return d;

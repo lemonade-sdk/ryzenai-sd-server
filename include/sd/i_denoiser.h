@@ -36,6 +36,35 @@ public:
 
     /// Latent space dimensions (height and width are divided by this factor)
     virtual int latent_scale_factor() const { return 8; }  // Default: 8x downsampling
+
+    /// Convert VAE-encoder output (raw latent space, same layout the VAE
+    /// decoder consumes) into whatever space denoise() actually expects as
+    /// its `latents` input, for img2img. Most variants denoise directly in
+    /// raw VAE latent space, so the default is a no-op passthrough.
+    ///
+    /// Variants whose denoise() operates on a transformed/packed/normalized
+    /// token space (e.g. FLUX.2-klein's 2x2-patchified, BatchNorm-normalized
+    /// 128-channel tokens) MUST override this to perform the forward
+    /// transform, otherwise img2img will feed raw VAE latents into a space
+    /// the transformer never sees during training, producing garbage output.
+    virtual std::vector<float> prepare_img2img_latents(
+        const std::vector<float>& vae_latents,
+        int height, int width) const {
+        (void)height; (void)width;
+        return vae_latents;
+    }
+
+    /// Some variants (e.g. FLUX.2-klein) compute their own internal sigma
+    /// schedule inside denoise() and ignore the Scheduler the pipeline
+    /// passes in. For those, the pipeline's generic scheduler sigma used to
+    /// blend noise with encoded latents for img2img would not match what the
+    /// denoiser actually uses internally at the same step index. Override
+    /// these two to report the denoiser's own sigma value instead.
+    virtual bool has_custom_img2img_sigma() const { return false; }
+    virtual float img2img_start_sigma(int /*start_step*/, int /*total_steps*/,
+                                       int /*height*/, int /*width*/) const {
+        return 0.0f;
+    }
 };
 
 } // namespace sd_npu

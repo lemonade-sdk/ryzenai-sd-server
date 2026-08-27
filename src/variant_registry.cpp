@@ -114,14 +114,31 @@ void VariantRegistry::discover_components(const fs::path& model_dir,
                                            SDConfig& config) const {
     std::string base = model_dir.string();
 
+    // Some variants ship a separate "inpainting/" bundle (a paired
+    // transformer + mask-aware ControlNet) alongside the default
+    // sub_model_dir ("normal") text-to-image bundle. When the caller
+    // requests a mask-aware ControlNet type (InPainting/OutPainting/Removal)
+    // and that bundle exists on disk, prefer it over the default so the
+    // paired transformer/controlnet are discovered together.
+    std::string effective_sub_model_dir = desc.sub_model_dir;
+    if (!config.controlnet_type.empty() &&
+        is_inpainting_controlnet(controlnet_from_string(config.controlnet_type))) {
+        auto inpaint_dir = model_dir / "inpainting";
+        if (fs::exists(inpaint_dir)) {
+            effective_sub_model_dir = "inpainting";
+            std::cout << "[REGISTRY] ControlNet type '" << config.controlnet_type
+                      << "' requested: using 'inpainting' sub-model bundle" << std::endl;
+        }
+    }
+
     // Resolve common/ and sub-model directories
     std::string common_path = base;
     std::string sub_path = base;
     if (desc.has_common_dir) {
         auto cp = (model_dir / "common").string();
         if (fs::exists(cp)) common_path = cp;
-        if (!desc.sub_model_dir.empty()) {
-            auto sp = (model_dir / desc.sub_model_dir).string();
+        if (!effective_sub_model_dir.empty()) {
+            auto sp = (model_dir / effective_sub_model_dir).string();
             if (fs::exists(sp)) sub_path = sp;
         }
     }
@@ -152,8 +169,8 @@ void VariantRegistry::discover_components(const fs::path& model_dir,
                 if (spec.search_common) {
                     prefixed.push_back("common/" + p);
                 }
-                if (!desc.sub_model_dir.empty()) {
-                    prefixed.push_back(desc.sub_model_dir + "/" + p);
+                if (!effective_sub_model_dir.empty()) {
+                    prefixed.push_back(effective_sub_model_dir + "/" + p);
                 }
             }
             found = find_first(base, prefixed);
@@ -194,10 +211,10 @@ void VariantRegistry::discover_components(const fs::path& model_dir,
                 std::cout << "[REGISTRY] Found ControlNet in base: " << cn_found << std::endl;
             }
         }
-        if (cn_found.empty() && desc.has_common_dir && !desc.sub_model_dir.empty()) {
+        if (cn_found.empty() && desc.has_common_dir && !effective_sub_model_dir.empty()) {
             std::vector<std::string> prefixed;
             for (const auto& p : cn_paths) {
-                prefixed.push_back(desc.sub_model_dir + "/" + p);
+                prefixed.push_back(effective_sub_model_dir + "/" + p);
             }
             cn_found = find_first(base, prefixed);
             if (!cn_found.empty()) {
@@ -221,10 +238,10 @@ void VariantRegistry::discover_components(const fs::path& model_dir,
                         if (vae_enc_found.empty()) {
                             vae_enc_found = find_first(base, spec.search_paths);
                         }
-                        if (vae_enc_found.empty() && desc.has_common_dir && !desc.sub_model_dir.empty()) {
+                        if (vae_enc_found.empty() && desc.has_common_dir && !effective_sub_model_dir.empty()) {
                             std::vector<std::string> prefixed;
                             for (const auto& p : spec.search_paths) {
-                                prefixed.push_back(desc.sub_model_dir + "/" + p);
+                                prefixed.push_back(effective_sub_model_dir + "/" + p);
                             }
                             vae_enc_found = find_first(base, prefixed);
                         }

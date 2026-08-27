@@ -3,7 +3,7 @@
 
 #include "variant_registry.h"
 #include "variants/sdxl_text_encoder.h"
-#include "variants/sdxl_vae_decoder.h"
+#include "variants/generic_vae_decoder.h"
 #include "variants/generic_denoiser.h"
 
 namespace sd_npu {
@@ -76,7 +76,7 @@ static VariantDescriptor make_sdxl_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<SDXLVaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 0.13025f, 0.0f, 4, "SDXL");
     };
 
     return d;
@@ -149,7 +149,7 @@ static VariantDescriptor make_sdxl_turbo_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<SDXLVaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 0.13025f, 0.0f, 4, "SDXL-Turbo");
     };
 
     return d;

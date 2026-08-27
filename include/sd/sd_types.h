@@ -80,6 +80,18 @@ inline const char* controlnet_to_string(ControlNetType t) {
     return "None";
 }
 
+// Mask-aware ControlNet family: InPainting/OutPainting/Removal all condition
+// on a (masked-image-latents + downsampled-mask) tensor instead of a plain
+// VAE-encoded control image (e.g. alimama's SD3-Controlnet-Inpainting, which
+// also serves outpainting/removal via the mask content). Models in this
+// family are typically shipped in a separate "inpainting/" sub-directory and
+// are trained with force_zeros_for_pooled_projection=true.
+inline bool is_inpainting_controlnet(ControlNetType t) {
+    return t == ControlNetType::INPAINTING ||
+           t == ControlNetType::OUTPAINTING ||
+           t == ControlNetType::REMOVAL;
+}
+
 // Scheduler type
 enum class SchedulerType {
     PNDM,

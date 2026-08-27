@@ -3,7 +3,7 @@
 
 #include "variant_registry.h"
 #include "variants/sdxl_text_encoder.h"
-#include "variants/sdxl_vae_decoder.h"
+#include "variants/generic_vae_decoder.h"
 #include "variants/generic_denoiser.h"
 #include <algorithm>
 #include <cctype>
@@ -97,7 +97,7 @@ static VariantDescriptor make_playground_v25_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<SDXLVaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 0.13025f, 0.0f, 4, "Playground v2.5");
     };
 
     return d;
@@ -145,7 +145,7 @@ static VariantDescriptor make_dreamshaper_xl_lightning_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<SDXLVaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 0.13025f, 0.0f, 4, "Dreamshaper XL Lightning");
     };
 
     return d;
@@ -193,7 +193,7 @@ static VariantDescriptor make_ssd_1b_descriptor() {
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<SDXLVaeDecoder>(components);
+        return std::make_unique<GenericVaeDecoder>(components, 0.13025f, 0.0f, 4, "SSD-1B");
     };
 
     return d;

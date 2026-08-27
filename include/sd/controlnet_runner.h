@@ -59,13 +59,14 @@ public:
 private:
     OnnxModel* model_;      // Not owned
     ControlNetType type_;
+    bool logged_shapes_ = false;  // Only print the verbose input-shape dump once
 
     /// Convert 6 block outputs to 12 by duplicating each block.
     void duplicate_blocks(
         const std::vector<Ort::Value>& outputs,
         std::vector<std::vector<Ort::Float16_t>>& ctrl_fp16_out);
 
-    /// Extract 12 block outputs directly.
+    /// Extract block outputs directly, one entry per raw ControlNet output.
     void extract_blocks(
         const std::vector<Ort::Value>& outputs,
         std::vector<std::vector<Ort::Float16_t>>& ctrl_fp16_out);

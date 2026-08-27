@@ -1,7 +1,7 @@
-// sd15_vae_decoder.cpp - SD1.5 VAE decoder implementation
+// generic_vae_decoder.cpp - Parameterized VAE decoder shared by SD1.5, SDXL, SD3/SD3.5, and FLUX
 // Copyright (C) 2025 Advanced Micro Devices, Inc.
 
-#include "variants/sd15_vae_decoder.h"
+#include "variants/generic_vae_decoder.h"
 #include <iostream>
 #include <algorithm>
 #include <chrono>
@@ -9,15 +9,23 @@
 
 namespace sd_npu {
 
-SD15VaeDecoder::SD15VaeDecoder(
-    std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
-    : components_(components) {}
+GenericVaeDecoder::GenericVaeDecoder(
+    std::map<ComponentType, std::unique_ptr<OnnxModel>>& components,
+    float scaling_factor,
+    float shift_factor,
+    int channels,
+    std::string label)
+    : components_(components),
+      scaling_factor_(scaling_factor),
+      shift_factor_(shift_factor),
+      channels_(channels),
+      label_(std::move(label)) {}
 
-std::vector<uint8_t> SD15VaeDecoder::decode(
+std::vector<uint8_t> GenericVaeDecoder::decode(
     const std::vector<float>& latents,
     int height, int width) {
 
-    std::cout << "Decoding latents to image (SD1.5)..." << std::endl;
+    std::cout << "Decoding latents to image (" << label_ << ")..." << std::endl;
 
     if (!components_.count(ComponentType::VAE_DECODER)) {
         std::cout << "  WARNING: No VAE decoder loaded, returning blank image" << std::endl;
@@ -26,26 +34,22 @@ std::vector<uint8_t> SD15VaeDecoder::decode(
 
     auto& vae = components_[ComponentType::VAE_DECODER];
 
-    const float scaling_factor = 0.18215f;
-    const float shift_factor = 0.0f;
-    const int vae_channels = 4;
-
     int latent_h = height / 8;
     int latent_w = width  / 8;
-    size_t latent_size = vae_channels * latent_h * latent_w;
+    size_t latent_size = static_cast<size_t>(channels_) * latent_h * latent_w;
 
     // Apply: scaled = latents / scaling_factor + shift_factor
     std::vector<float> scaled_latents(latent_size);
     for (size_t i = 0; i < latent_size; i++) {
-        scaled_latents[i] = (latents[i] / scaling_factor) + shift_factor;
+        scaled_latents[i] = (latents[i] / scaling_factor_) + shift_factor_;
     }
 
-    std::cout << "  VAE pre-scaling: scaling_factor=" << scaling_factor
-              << " shift_factor=" << shift_factor << std::endl;
+    std::cout << "  VAE pre-scaling: scaling_factor=" << scaling_factor_
+              << " shift_factor=" << shift_factor_ << std::endl;
 
     // Build input tensor
     Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    std::vector<int64_t> vae_shape = {1, vae_channels, latent_h, latent_w};
+    std::vector<int64_t> vae_shape = {1, channels_, latent_h, latent_w};
 
     auto vae_input_type = vae->get_input_type(0);
     std::vector<Ort::Value> vae_inputs;
@@ -127,7 +131,7 @@ std::vector<uint8_t> SD15VaeDecoder::decode(
     return image;
 }
 
-std::vector<uint8_t> SD15VaeDecoder::convert_image_f32(
+std::vector<uint8_t> GenericVaeDecoder::convert_image_f32(
     float* data, int out_h, int out_w, bool print_stats) {
 
     if (print_stats) {
@@ -158,7 +162,7 @@ std::vector<uint8_t> SD15VaeDecoder::convert_image_f32(
     return image;
 }
 
-std::vector<uint8_t> SD15VaeDecoder::convert_image_f16(
+std::vector<uint8_t> GenericVaeDecoder::convert_image_f16(
     Ort::Float16_t* data, int out_h, int out_w) {
 
     std::vector<uint8_t> image(out_h * out_w * 3);

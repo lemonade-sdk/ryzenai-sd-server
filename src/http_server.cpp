@@ -554,6 +554,30 @@ void SDServer::run() {
             }
             auto [req_width, req_height] = parse_size(size_str, config_.width, config_.height);
 
+            // Parse "n" field from JSON (e.g., "n":4) -- a plain numeric value,
+            // not a quoted string, so look for the first non-whitespace run of
+            // digits after the colon instead of the quote-delimited scan used
+            // for prompt/size above.
+            int n = 1;
+            auto n_pos = json_str.find("\"n\"");
+            if (n_pos != std::string::npos) {
+                auto n_colon = json_str.find(":", n_pos);
+                if (n_colon != std::string::npos) {
+                    size_t digit_start = n_colon + 1;
+                    while (digit_start < json_str.size() && std::isspace((unsigned char)json_str[digit_start])) {
+                        digit_start++;
+                    }
+                    size_t digit_end = digit_start;
+                    while (digit_end < json_str.size() && std::isdigit((unsigned char)json_str[digit_end])) {
+                        digit_end++;
+                    }
+                    if (digit_end > digit_start) {
+                        n = std::stoi(json_str.substr(digit_start, digit_end - digit_start));
+                    }
+                }
+            }
+            if (n < 1) n = 1;
+
             // Parse extra args from prompt (Lemonade embeds steps, cfg_scale, seed)
             auto extra = parse_extra_args(prompt);
             std::string clean_prompt = extra.clean_prompt;
@@ -579,6 +603,7 @@ void SDServer::run() {
             std::cout << "[REQUEST] Generating image:" << std::endl;
             std::cout << "  prompt: \"" << clean_prompt << "\"" << std::endl;
             std::cout << "  size: " << req_config.width << "x" << req_config.height << std::endl;
+            std::cout << "  n: " << n << std::endl;
             std::cout << "  steps: " << req_config.num_inference_steps
                       << ", cfg_scale: " << req_config.guidance_scale
                       << ", seed: " << req_config.seed << std::endl;
@@ -586,46 +611,62 @@ void SDServer::run() {
 
             auto start = std::chrono::high_resolution_clock::now();
 
-            // Update pipeline config and generate under lock
-            ImageResponse response;
+            // Update pipeline config and generate under lock. Mirrors
+            // /v1/images/edits and /v1/images/variations: the pipeline only
+            // produces one image per generate() call, so n>1 is fulfilled by
+            // looping sequentially, varying the seed per image.
+            std::vector<ImageData> all_images;
+            ImageResponse last_response;
+            bool any_success = false;
             {
                 std::lock_guard<std::mutex> lock(pipeline_mutex_);
-                pipeline_->update_config(req_config);
-                response = pipeline_->generate(clean_prompt, negative_prompt);
+                for (int i = 0; i < n; i++) {
+                    SDConfig img_config = req_config;
+                    img_config.seed = req_config.seed + i;
+                    pipeline_->update_config(img_config);
+                    ImageResponse response = pipeline_->generate(clean_prompt, negative_prompt);
+                    if (response.success) {
+                        all_images.insert(all_images.end(), response.data.begin(), response.data.end());
+                        any_success = true;
+                    }
+                    last_response = response;
+                }
             }
 
             auto end = std::chrono::high_resolution_clock::now();
             auto gen_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-            if (!response.success) {
+            if (!any_success) {
                 std::ostringstream err;
-                err << R"({"error":{"message":")" << response.error << R"("}})";
+                err << R"({"error":{"message":")" << last_response.error << R"("}})";
                 res.status = 500;
                 res.set_content(err.str(), "application/json");
                 return;
             }
 
-            std::cout << "[RESPONSE] Generated in " << gen_ms << " ms ("
-                      << response.width << "x" << response.height << ", "
-                      << "base64 length: " << (response.data.empty() ? 0 : response.data[0].b64_json.length())
+            std::cout << "[RESPONSE] Generated " << all_images.size() << " image(s) in " << gen_ms << " ms ("
+                      << last_response.width << "x" << last_response.height << ", "
+                      << "base64 length: " << (all_images.empty() ? 0 : all_images[0].b64_json.length())
                       << " chars)" << std::endl;
 
-            // Build OpenAI-compatible response with timing info
+            // Build OpenAI-compatible response with timing info (timing
+            // reflects the last generated image, matching the single-image
+            // response shape when n==1).
             std::ostringstream resp;
-            resp << R"({"created":)" << response.created
-                 << R"(,"width":)"  << response.width
-                 << R"(,"height":)" << response.height
+            resp << R"({"created":)" << last_response.created
+                 << R"(,"width":)"  << last_response.width
+                 << R"(,"height":)" << last_response.height
                  << R"(,"format":"raw_rgb")"
                  << R"(,"data":[)";
-            for (size_t i = 0; i < response.data.size(); i++) {
+            for (size_t i = 0; i < all_images.size(); i++) {
                 if (i > 0) resp << ",";
-                resp << R"({"b64_json":")" << response.data[i].b64_json << R"("})";
+                resp << R"({"b64_json":")" << all_images[i].b64_json << R"("})";
             }
-            resp << R"(],"timing":{"total_ms":)" << response.generation_time_ms
-                 << R"(,"denoise_ms":)" << response.denoising_time_ms
-                 << R"(,"text_encode_ms":)" << response.text_encoding_time_ms
-                 << R"(,"vae_decode_ms":)" << response.vae_decoding_time_ms
-                 << R"(,"steps":)" << response.num_inference_steps
+            resp << R"(],"timing":{"total_ms":)" << last_response.generation_time_ms
+                 << R"(,"denoise_ms":)" << last_response.denoising_time_ms
+                 << R"(,"text_encode_ms":)" << last_response.text_encoding_time_ms
+                 << R"(,"vae_decode_ms":)" << last_response.vae_decoding_time_ms
+                 << R"(,"steps":)" << last_response.num_inference_steps
                  << R"(}})";
 
             res.set_content(resp.str(), "application/json");
@@ -751,7 +792,7 @@ void SDServer::run() {
                     img_config.seed = req_config.seed + i;
                     pipeline_->update_config(img_config);
 
-                    auto img_response = pipeline_->generate(clean_prompt, "", control_rgb);
+                    auto img_response = pipeline_->generate(clean_prompt, "", control_rgb, mask_rgb);
                     if (img_response.success && !img_response.data.empty()) {
                         all_images.insert(all_images.end(), img_response.data.begin(), img_response.data.end());
                         resp_width  = img_response.width;
