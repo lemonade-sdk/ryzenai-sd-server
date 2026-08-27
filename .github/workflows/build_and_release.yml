@@ -67,12 +67,12 @@ jobs:
           mkdir build
           cd build
 
-          # Configure — ONNXRUNTIME_LIB_DIR defaults to C:\Program Files\RyzenAI\1.7.1\onnxruntime\lib
+          # Configure — ONNXRUNTIME_LIB_DIR defaults to C:\Program Files\RyzenAI\1.8.0\onnxruntime\lib
           # RUNTIME_DLLS_DIR copies all ORT + VitisAI EP DLLs (onnxruntime.dll, vaiml.dll, etc.) next to the exe
           # LIB_DIRECTORY deploys the GenAI-SD lib tree (stable diffusion pipeline DLLs) alongside the exe
           cmake .. -G "Visual Studio 17 2022" -A x64 `
-            -DRUNTIME_DLLS_DIR="C:\Program Files\RyzenAI\1.7.1\deployment" `
-            -DLIB_DIRECTORY="C:\Program Files\RyzenAI\1.7.1\GenAI-SD\lib"
+            -DRUNTIME_DLLS_DIR="C:\Program Files\RyzenAI\1.8.0\deployment" `
+            -DLIB_DIRECTORY="C:\Program Files\RyzenAI\1.8.0\GenAI-SD\lib"
           if ($LASTEXITCODE -ne 0) {
               Write-Host "ERROR: CMake configuration failed!" -ForegroundColor Red
               exit $LASTEXITCODE
@@ -380,7 +380,7 @@ jobs:
 
             ### Supported Models
 
-            SD 1.5, SD Turbo, SDXL, SDXL Turbo, SD3 Medium, SD3.5 Medium — auto-detected from model directory.
+            SD 1.5, SD Turbo, SDXL, SDXL Turbo, SD3 Medium, SD3.5 Medium, FLUX.1-schnell, FLUX.2-klein — auto-detected from model directory.
 
             See the [README](https://github.com/lemonade-sdk/ryzenai-sd-server#readme) for full documentation.
           files: ryzenai-sd-server.zip

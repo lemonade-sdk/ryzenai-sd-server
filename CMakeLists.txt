@@ -27,10 +27,10 @@ if(NOT DEFINED ONNXRUNTIME_LIB_DIR)
         set(ONNXRUNTIME_LIB_DIR "$ENV{ONNXRUNTIME_LIB_DIR}" CACHE PATH
             "Directory containing onnxruntime.lib and runtime DLLs")
     elseif(WIN32)
-        set(ONNXRUNTIME_LIB_DIR "C:/Program Files/RyzenAI/1.7.1/onnxruntime/lib" CACHE PATH
+        set(ONNXRUNTIME_LIB_DIR "C:/Program Files/RyzenAI/1.8.0/onnxruntime/lib" CACHE PATH
             "Directory containing onnxruntime.lib and runtime DLLs")
     elseif(UNIX AND NOT APPLE)
-        set(ONNXRUNTIME_LIB_DIR "/opt/ryzenai/1.7.1/onnxruntime/lib" CACHE PATH
+        set(ONNXRUNTIME_LIB_DIR "/opt/ryzenai/1.8.0/onnxruntime/lib" CACHE PATH
             "Directory containing libonnxruntime.so")
     endif()
 endif()
@@ -72,6 +72,19 @@ if(NOT EXISTS "${STB_DIR}/stb_image.h")
     )
 endif()
 
+# ── SentencePiece (T5 tokenizer) ─────────────────────────────────────────────
+include(FetchContent)
+FetchContent_Declare(
+    sentencepiece
+    GIT_REPOSITORY https://github.com/google/sentencepiece.git
+    GIT_TAG        v0.2.0
+    GIT_SHALLOW    TRUE
+)
+set(SPM_ENABLE_SHARED OFF CACHE BOOL "" FORCE)
+set(SPM_BUILD_TEST   OFF CACHE BOOL "" FORCE)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(sentencepiece)
+
 # ── Source files ─────────────────────────────────────────────────────────────
 set(SOURCES
     src/main.cpp
@@ -93,6 +106,11 @@ set(SOURCES
     src/variants/sd3_vae_decoder.cpp
     src/variants/flux_text_encoder.cpp
     src/variants/flux_vae_decoder.cpp
+    src/variants/flux2_text_encoder.cpp
+    src/variants/flux2_denoiser.cpp
+    src/variants/flux2_vae_decoder.cpp
+    src/qwen3_tokenizer.cpp
+    src/t5_tokenizer.cpp
     # Variant registrations (self-registering descriptors)
     src/variants/sd15_variant.cpp
     src/variants/sdxl_variant.cpp
@@ -110,15 +128,18 @@ add_executable(ryzenai-sd-server ${SOURCES})
 # - external/cpp-httplib/ : auto-downloaded HTTP library
 target_include_directories(ryzenai-sd-server PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/sd
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/onnxruntime
+    ${ONNXRUNTIME_LIB_DIR}/../include/onnxruntime/core/session
+    ${ONNXRUNTIME_LIB_DIR}/../include/onnxruntime/core/providers
     ${HTTPLIB_DIR}
     ${STB_DIR}
+    ${sentencepiece_SOURCE_DIR}/src
 )
 
 # Link libraries
 target_link_libraries(ryzenai-sd-server PRIVATE
     ${ONNXRUNTIME_LIB}
     Threads::Threads
+    sentencepiece-static
 )
 
 # Pass version info from CMake to C++ as compile definitions

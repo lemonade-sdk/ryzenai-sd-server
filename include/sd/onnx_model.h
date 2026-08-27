@@ -10,10 +10,6 @@
 
 namespace sd_npu {
 
-// Global custom ops path (set once by SDPipeline, used by all OnnxModel instances)
-void set_custom_ops_path(const std::string& path);
-const std::string& get_custom_ops_path();
-
 // Single ONNX model wrapper with DD cache and custom ops support
 class OnnxModel {
 public:

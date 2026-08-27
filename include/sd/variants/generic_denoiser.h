@@ -33,6 +33,8 @@ struct DenoiserSpec {
     int embed_dim = 768;   // encoder_hidden_states last dim
     int pool_dim  = 0;     // pooled projection dim (0 = model has no pooled input)
     int latent_ch = 4;     // latent channels (4 for SD1.5/SDXL, 16 for SD3)
+    bool disable_cfg = false;  // FLUX distilled models never batch for classifier-free guidance
+    float timestep_scale = 1.0f;  // FLUX normalizes the transformer timestep to [0,1] (x1/1000)
 };
 
 // ============================================================================

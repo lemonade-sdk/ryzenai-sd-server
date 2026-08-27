@@ -12,7 +12,6 @@ namespace sd_npu {
 struct ServerConfig {
     // Paths
     std::string onnxruntime_root;
-    std::string custom_ops_dll;
     std::string dd_root;
     std::string dd_plugins_root;
     std::string opencv_root;

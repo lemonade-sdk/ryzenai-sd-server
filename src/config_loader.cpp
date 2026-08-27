@@ -85,7 +85,6 @@ std::optional<ServerConfig> ConfigLoader::load(const std::string& config_path) {
     
     // Parse paths
     config.onnxruntime_root = find_value("onnxruntime_root");
-    config.custom_ops_dll = find_value("custom_ops_dll");
     config.dd_root = find_value("dd_root");
     config.dd_plugins_root = find_value("dd_plugins_root");
     config.opencv_root = find_value("opencv_root");
@@ -124,7 +123,6 @@ bool ConfigLoader::save(const std::string& config_path, const ServerConfig& conf
     file << "{\n";
     file << "  \"paths\": {\n";
     file << "    \"onnxruntime_root\": \"" << config.onnxruntime_root << "\",\n";
-    file << "    \"custom_ops_dll\": \"" << config.custom_ops_dll << "\",\n";
     file << "    \"dd_root\": \"" << config.dd_root << "\",\n";
     file << "    \"dd_plugins_root\": \"" << config.dd_plugins_root << "\",\n";
     file << "    \"opencv_root\": \"" << config.opencv_root << "\",\n";

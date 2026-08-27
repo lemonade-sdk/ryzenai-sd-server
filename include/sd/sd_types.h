@@ -152,8 +152,6 @@ struct SDConfig {
     std::string model_id;             // e.g., "amd/stable-diffusion-1.5-amdnpu"
     std::string revision;             // Git branch/tag/commit for HF download
 
-    // Custom ops
-    std::string custom_op_path;
     std::string dd_cache_path;
 
     // ControlNet (optional)

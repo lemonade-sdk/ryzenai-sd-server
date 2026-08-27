@@ -338,7 +338,6 @@ std::string SDServer::load_model(const std::string& model_path) {
         // Build new config, preserving execution-provider settings from current config
         SDConfig new_config;
         new_config.variant = variant;
-        new_config.custom_op_path = config_.custom_op_path;
         new_config.dd_cache_path = config_.dd_cache_path;
         new_config.force_cpu = config_.force_cpu;
         new_config.gpu = config_.gpu;

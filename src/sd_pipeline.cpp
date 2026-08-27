@@ -13,6 +13,7 @@
 #include <sstream>
 #include <cmath>
 #include <deque>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -245,9 +246,6 @@ SDPipeline::SDPipeline(const SDConfig& config)
 
     auto start = std::chrono::high_resolution_clock::now();
     
-    // Set global custom ops path for OnnxModel to use
-    set_custom_ops_path(config_.custom_op_path);
-
     setup_onnx_session_options();
     
     auto after_setup = std::chrono::high_resolution_clock::now();
@@ -331,30 +329,62 @@ void SDPipeline::load_onnx_models() {
         }
     }
 
-    // Load all discovered components generically
+    // Resolve the ComponentType for a discovered component key.
+    auto resolve_type = [&](const std::string& key, ComponentType& out) -> bool {
+        auto it = key_to_type.find(key);
+        if (it != key_to_type.end()) { out = it->second; return true; }
+        // Fallback mapping for components not in descriptor
+        if (key == "text_encoder") out = ComponentType::TEXT_ENCODER;
+        else if (key == "text_encoder_2") out = ComponentType::TEXT_ENCODER_2;
+        else if (key == "text_encoder_3") out = ComponentType::TEXT_ENCODER_3;
+        else if (key == "unet") out = ComponentType::UNET;
+        else if (key == "transformer") out = ComponentType::TRANSFORMER;
+        else if (key == "vae_decoder") out = ComponentType::VAE_DECODER;
+        else if (key == "vae_encoder") out = ComponentType::VAE_ENCODER;
+        else return false;
+        return true;
+    };
+
+    // Load priority: the RyzenAI NPU EP allocates a shared static instruction
+    // buffer sized by the FIRST DynamicDispatch model loaded. The VAE decoder
+    // needs a larger instruction buffer than the denoiser (unet/transformer),
+    // so the VAE MUST load before the denoiser or the VAE fails with
+    // "static instruction bo smaller than requested". This mirrors the GenAI-SD
+    // python reference load order (vae_decoder before transformer).
+    auto load_priority = [](ComponentType t) -> int {
+        switch (t) {
+            case ComponentType::TEXT_ENCODER:
+            case ComponentType::TEXT_ENCODER_2:
+            case ComponentType::TEXT_ENCODER_3: return 0;
+            case ComponentType::VAE_ENCODER:    return 1;
+            case ComponentType::VAE_DECODER:    return 2;
+            case ComponentType::UNET:
+            case ComponentType::TRANSFORMER:    return 3;
+            default:                            return 2;
+        }
+    };
+
+    // Collect and order components before loading.
+    struct LoadEntry { std::string key; std::string path; ComponentType type; };
+    std::vector<LoadEntry> load_order;
     for (const auto& [key, path] : config_.component_paths) {
         if (key == "controlnet") continue;  // handled separately below
         ComponentType type;
-        auto it = key_to_type.find(key);
-        if (it != key_to_type.end()) {
-            type = it->second;
-        } else {
-            // Fallback mapping for components not in descriptor
-            if (key == "text_encoder") type = ComponentType::TEXT_ENCODER;
-            else if (key == "text_encoder_2") type = ComponentType::TEXT_ENCODER_2;
-            else if (key == "text_encoder_3") type = ComponentType::TEXT_ENCODER_3;
-            else if (key == "unet") type = ComponentType::UNET;
-            else if (key == "transformer") type = ComponentType::TRANSFORMER;
-            else if (key == "vae_decoder") type = ComponentType::VAE_DECODER;
-            else if (key == "vae_encoder") type = ComponentType::VAE_ENCODER;
-            else {
-                std::cout << "  Skipping unknown component: " << key << std::endl;
-                continue;
-            }
+        if (!resolve_type(key, type)) {
+            std::cout << "  Skipping unknown component: " << key << std::endl;
+            continue;
         }
-        std::cout << "  Loading " << key << " from " << path << std::endl;
-        components_[type] = std::make_unique<OnnxModel>(
-            path, session_options_, env_);
+        load_order.push_back({key, path, type});
+    }
+    std::stable_sort(load_order.begin(), load_order.end(),
+                     [&](const LoadEntry& a, const LoadEntry& b) {
+                         return load_priority(a.type) < load_priority(b.type);
+                     });
+
+    for (const auto& entry : load_order) {
+        std::cout << "  Loading " << entry.key << " from " << entry.path << std::endl;
+        components_[entry.type] = std::make_unique<OnnxModel>(
+            entry.path, session_options_, env_);
     }
     // ControlNet (optional)
     if (!config_.controlnet_type.empty() &&
@@ -490,7 +520,11 @@ ImageResponse SDPipeline::generate(
     response.success = true;
 
     // 0. Read model's compiled latent dimensions (DD models have fixed shapes)
-    int latent_ch = is_sd3_family(config_.variant) ? 16 : 4;
+    // Prefer the denoiser's declared latent channel count (authoritative per
+    // variant: 16 for SD3/FLUX, 4 for SD1.5/SDXL). FLUX transformers take a
+    // packed 3D input so the sample-shape probe below cannot recover this.
+    int latent_ch = denoiser_ ? denoiser_->latent_channels()
+                              : (is_sd3_family(config_.variant) ? 16 : 4);
     int latent_h  = config_.height / 8;
     int latent_w  = config_.width / 8;
     int output_h  = config_.height;

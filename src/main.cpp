@@ -48,8 +48,6 @@ MODEL OPTIONS:
   --model-id <id>             HuggingFace model ID for auto-download
                               (e.g. amd/stable-diffusion-1.5-amdnpu)
   --revision <rev>            Git branch/tag/commit for HF download [default: main]
-  --custom-ops, -c <path>     Path to onnx_custom_ops.dll
-
 DD ENVIRONMENT:
   --dd-root <path>            DD root path for DynamicDispatch
   --dd-plugins-root <path>    DD plugins path (set as DD_ROOT / DD_PLUGINS_ROOT env vars)
@@ -137,10 +135,9 @@ struct CliArgs {
     std::string model_id;          // HuggingFace model ID for auto-download
     std::string revision;          // Git branch/tag/commit for HF download
     std::string variant_str;       // empty = auto-detect
-    std::string custom_ops_path = "C:/Program Files/RyzenAI/1.7.1/deployment/onnx_custom_ops.dll";
     // DD env defaults (absolute paths)
-    std::string dd_root = "C:/Program Files/RyzenAI/1.7.1/deployment";
-    std::string dd_plugins_root = "C:/Program Files/RyzenAI/1.7.1/deployment";
+    std::string dd_root = "C:/Program Files/RyzenAI/1.8.0/deployment";
+    std::string dd_plugins_root = "C:/Program Files/RyzenAI/1.8.0/deployment";
 
     // Generation
     std::string prompt = "An astronaut riding a green horse";
@@ -230,7 +227,6 @@ static CliArgs parse_args(int argc, char** argv) {
         else if (arg == "--model-id")                        { str_val(a.model_id); }
         else if (arg == "--revision")                        { str_val(a.revision); }
         else if (arg == "--variant" || arg == "-v")          { str_val(a.variant_str); }
-        else if (arg == "--custom-ops" || arg == "-c")       { str_val(a.custom_ops_path); }
         else if (arg == "--dd-root")                         { str_val(a.dd_root); }
         else if (arg == "--dd-plugins-root")                 { str_val(a.dd_plugins_root); }
         else if (arg == "--prompt" || arg == "-p")           { str_val(a.prompt); }
@@ -350,16 +346,10 @@ int main(int argc, char** argv) {
             std::cout << "[CONFIG] Loaded config from: " << config_path << std::endl;
             
             // Apply config defaults for paths (command-line args override)
-            if (args.custom_ops_path == "C:/Program Files/RyzenAI/1.7.1/deployment/onnx_custom_ops.dll" && 
-                !cfg.custom_ops_dll.empty()) {
-                args.custom_ops_path = cfg.custom_ops_dll;
-            }
-            if (args.dd_root == "C:/Program Files/RyzenAI/1.7.1/deployment" && 
-                !cfg.dd_root.empty()) {
+            if (!cfg.dd_root.empty()) {
                 args.dd_root = cfg.dd_root;
             }
-            if (args.dd_plugins_root == "C:/Program Files/RyzenAI/1.7.1/deployment" && 
-                !cfg.dd_plugins_root.empty()) {
+            if (!cfg.dd_plugins_root.empty()) {
                 args.dd_plugins_root = cfg.dd_plugins_root;
             }
             
@@ -416,7 +406,6 @@ int main(int argc, char** argv) {
         config.guidance_scale      = args.guidance_scale;
         config.seed                = args.seed;
         config.num_images_per_prompt = args.num_images;
-        config.custom_op_path      = args.custom_ops_path;
         config.controlnet_type     = args.controlnet;
         config.controlnet_scale    = args.controlnet_scale;
         config.control_image_path  = args.control_image;
@@ -464,7 +453,6 @@ int main(int argc, char** argv) {
         std::cout << "Steps:         " << config.num_inference_steps << "\n";
         std::cout << "Guidance:      " << config.guidance_scale << "\n";
         std::cout << "Seed:          " << config.seed << "\n";
-        std::cout << "Custom ops:    " << config.custom_op_path << "\n";
         if (!config.controlnet_type.empty()) {
             std::cout << "ControlNet:    " << config.controlnet_type
                       << " (scale=" << config.controlnet_scale << ")\n";

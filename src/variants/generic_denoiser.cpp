@@ -120,8 +120,50 @@ void GenericDenoiser::build_inputs(
 
         // Input 0 is always the latent sample (named "sample" or "hidden_states").
         if (i == 0) {
-            std::vector<int64_t> shape = {batch, channels, latent_h, latent_w};
-            inputs.push_back(emit(mem, latent_input, shape, dt));
+            auto declared = model_->get_input_shape(i);
+            if (declared.size() == 3) {
+                // FLUX-style packed latent: [B, n_patches, patch_dim]
+                // Pack [B, C, H, W] -> [B, (H/2)*(W/2), C*4] with 2x2 patches.
+                const int patch = 2;
+                const int ph = latent_h / patch;
+                const int pw = latent_w / patch;
+                const int n_patches = ph * pw;
+                const int patch_dim = channels * patch * patch;  // 16*4 = 64
+                const size_t total = static_cast<size_t>(batch) * n_patches * patch_dim;
+                scratch_.f32.emplace_back(total, 0.0f);
+                auto& packed = scratch_.f32.back();
+
+                // latent_input is [B, C, H, W] row-major
+                for (int b = 0; b < batch; b++) {
+                    for (int h = 0; h < ph; h++) {
+                        for (int w = 0; w < pw; w++) {
+                            const int patch_idx = h * pw + w;
+                            int out_ch = 0;
+                            for (int c = 0; c < channels; c++) {
+                                for (int dh = 0; dh < patch; dh++) {
+                                    for (int dw = 0; dw < patch; dw++) {
+                                        const size_t src = static_cast<size_t>(b) * channels * latent_h * latent_w
+                                            + static_cast<size_t>(c) * latent_h * latent_w
+                                            + static_cast<size_t>(h * patch + dh) * latent_w
+                                            + (w * patch + dw);
+                                        const size_t dst = static_cast<size_t>(b) * n_patches * patch_dim
+                                            + static_cast<size_t>(patch_idx) * patch_dim
+                                            + out_ch;
+                                        packed[dst] = (src < latent_input.size()) ? latent_input[src] : 0.0f;
+                                        out_ch++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                std::vector<int64_t> shape = {batch, n_patches, patch_dim};
+                inputs.push_back(emit(mem, packed, shape, dt));
+            } else {
+                // Standard 4D latent: [B, C, H, W]
+                std::vector<int64_t> shape = {batch, channels, latent_h, latent_w};
+                inputs.push_back(emit(mem, latent_input, shape, dt));
+            }
             continue;
         }
 
@@ -149,8 +191,16 @@ void GenericDenoiser::build_inputs(
             ctrl_idx++;
         }
         else if (name.find("encoder_hidden_states") != std::string::npos) {
+            // seq_len is derived from the actual embedding size when the spec
+            // uses a dynamic length (e.g. T5 output varies by prompt).
+            int64_t actual_seq = static_cast<int64_t>(spec_.seq_len);
+            if (spec_.embed_dim > 0 && !text_emb.empty()) {
+                int64_t computed = static_cast<int64_t>(text_emb.size())
+                                   / (batch * spec_.embed_dim);
+                if (computed > 0) actual_seq = computed;
+            }
             std::vector<int64_t> shape =
-                {batch, static_cast<int64_t>(spec_.seq_len), static_cast<int64_t>(spec_.embed_dim)};
+                {batch, actual_seq, static_cast<int64_t>(spec_.embed_dim)};
             inputs.push_back(emit(mem, text_emb, shape, dt));
         }
         else if (name.find("pooled") != std::string::npos ||
@@ -172,13 +222,45 @@ void GenericDenoiser::build_inputs(
             }
             inputs.push_back(emit(mem, tid, shape, dt));
         }
+        else if (name == "img_ids") {
+            // FLUX: 2D positional IDs for packed latent patches.
+            // Latent is (H/8) x (W/8); patches are 2x2, so grid is (H/16) x (W/16).
+            const int ph = latent_h / 2;
+            const int pw = latent_w / 2;
+            const int64_t n_patches = static_cast<int64_t>(ph) * pw;
+            std::vector<int64_t> shape = {n_patches, 3};
+            scratch_.f32.emplace_back(static_cast<size_t>(n_patches) * 3, 0.0f);
+            auto& buf = scratch_.f32.back();
+            for (int h = 0; h < ph; h++) {
+                for (int w = 0; w < pw; w++) {
+                    const size_t base = static_cast<size_t>(h * pw + w) * 3;
+                    buf[base + 0] = 0.0f;
+                    buf[base + 1] = static_cast<float>(h);
+                    buf[base + 2] = static_cast<float>(w);
+                }
+            }
+            inputs.push_back(emit(mem, buf, shape, dt));
+        }
+        else if (name == "txt_ids") {
+            // FLUX: positional IDs for T5 text tokens — convention is all zeros.
+            int64_t actual_seq = static_cast<int64_t>(spec_.seq_len);
+            if (spec_.embed_dim > 0 && !text_emb.empty()) {
+                int64_t computed = static_cast<int64_t>(text_emb.size())
+                                   / (batch * spec_.embed_dim);
+                if (computed > 0) actual_seq = computed;
+            }
+            std::vector<int64_t> shape = {actual_seq, 3};
+            inputs.push_back(emit(mem, {}, shape, dt));
+        }
         else if (name.find("timestep") != std::string::npos ||
                  name == "t" || name == "timesteps" || name == "time") {
             std::vector<int64_t> shape = model_->get_input_shape(i);
             for (auto& d : shape) { if (d <= 0) d = batch; }
             size_t n = 1;
             for (auto d : shape) n *= static_cast<size_t>(d);
-            std::vector<float> ts(n, timestep);
+            // FLUX transformers expect the timestep normalized to [0,1]
+            // (reference passes timestep/1000); other models use it as-is.
+            std::vector<float> ts(n, timestep * spec_.timestep_scale);
             inputs.push_back(emit(mem, ts, shape, dt));
         }
         else {
@@ -208,7 +290,10 @@ std::vector<float> GenericDenoiser::denoise(
                        ? static_cast<int>(sample_shape[3]) : config.width / 8;
 
     // CFG: double the batch (uncond + cond) when guidance is active.
-    int batch = (config.guidance_scale > 1.0f) ? 2 : 1;
+    // FLUX distilled models (schnell/klein) are guidance-distilled: the text
+    // encoder emits a single batch and the transformer has no guidance input,
+    // so classifier-free guidance must never double the batch here.
+    int batch = (!spec_.disable_cfg && config.guidance_scale > 1.0f) ? 2 : 1;
 
     scheduler.set_timesteps(config.num_inference_steps);
     const auto& timesteps = scheduler.timesteps();
@@ -288,7 +373,9 @@ std::vector<float> GenericDenoiser::denoise(
         auto out_shape = out_info.GetShape();
         auto out_type = out_info.GetElementType();
 
-        noise_pred_f32.resize(out_shape[0] * single_size);
+        // For FLUX the output is packed [B, n_patches, 64]; total elements == batch*single_size.
+        const bool packed_output = (out_shape.size() == 3);
+        noise_pred_f32.resize(static_cast<size_t>(out_shape[0]) * single_size);
         if (out_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
             auto* fp16 = outputs[0].GetTensorMutableData<Ort::Float16_t>();
             for (size_t i = 0; i < noise_pred_f32.size(); i++)
@@ -296,6 +383,38 @@ std::vector<float> GenericDenoiser::denoise(
         } else {
             float* fp32 = outputs[0].GetTensorMutableData<float>();
             std::copy(fp32, fp32 + noise_pred_f32.size(), noise_pred_f32.begin());
+        }
+
+        // Unpack FLUX [B, n_patches, 64] → [B, C, H, W] using inverse 2x2 patchify.
+        if (packed_output) {
+            const int patch = 2;
+            const int ph = latent_h / patch;
+            const int pw = latent_w / patch;
+            const int patch_dim = channels * patch * patch;
+            std::vector<float> unpacked(noise_pred_f32.size());
+            for (int b = 0; b < static_cast<int>(out_shape[0]); b++) {
+                for (int h = 0; h < ph; h++) {
+                    for (int w = 0; w < pw; w++) {
+                        const int patch_idx = h * pw + w;
+                        int in_ch = 0;
+                        for (int c = 0; c < channels; c++) {
+                            for (int dh = 0; dh < patch; dh++) {
+                                for (int dw = 0; dw < patch; dw++) {
+                                    const size_t src = static_cast<size_t>(b) * ph * pw * patch_dim
+                                        + static_cast<size_t>(patch_idx) * patch_dim + in_ch;
+                                    const size_t dst = static_cast<size_t>(b) * channels * latent_h * latent_w
+                                        + static_cast<size_t>(c) * latent_h * latent_w
+                                        + static_cast<size_t>(h * patch + dh) * latent_w
+                                        + (w * patch + dw);
+                                    unpacked[dst] = noise_pred_f32[src];
+                                    in_ch++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            noise_pred_f32 = std::move(unpacked);
         }
 
         // Classifier-Free Guidance.

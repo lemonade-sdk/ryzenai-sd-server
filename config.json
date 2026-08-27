@@ -1,15 +1,14 @@
 {
   "paths": {
-    "onnxruntime_root": "C:/Program Files/RyzenAI/1.7.1/onnxruntime",
-    "custom_ops_dll": "C:/Program Files/RyzenAI/1.7.1/deployment/onnx_custom_ops.dll",
-    "dd_root": "C:/Program Files/RyzenAI/1.7.1/GenAI-SD/lib",
-    "dd_plugins_root": "C:/Program Files/RyzenAI/1.7.1/GenAI-SD/lib/transaction/stx",
+    "onnxruntime_root": "C:/Program Files/RyzenAI/1.8.0/onnxruntime",
+    "dd_root": "C:/Program Files/RyzenAI/1.8.0/GenAI-SD/lib",
+    "dd_plugins_root": "C:/Program Files/RyzenAI/1.8.0/GenAI-SD/lib/transaction/stx",
     "opencv_root": "C:/Users/mickraus/opencv",
-    "lib_directory": "C:/Program Files/RyzenAI/1.7.1/GenAI-SD/lib"
+    "lib_directory": "C:/Program Files/RyzenAI/1.8.0/GenAI-SD/lib"
   },
   "models": {
     "default_model_path": "",
-    "models_directory": "models",
+    "models_directory": "C:/Users/mickraus/Work/sd-sandbox",
     "rc3_models_directory": "C:/Users/mickraus/Work/RC3_test/GenAI-SD/models"
   },
   "server": {

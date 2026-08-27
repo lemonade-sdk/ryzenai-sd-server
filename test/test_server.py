@@ -7,24 +7,24 @@ Model parameters are data-driven from models.json — no per-model if/else logic
 
 Usage:
     # Test a single model (server must be running):
-    python run_tests.py txt2img --url http://localhost:8080
+    python test_server.py txt2img --url http://localhost:8080
 
     # Auto-launch server for a specific model:
-    python run_tests.py txt2img --model-path C:/models/stable-diffusion-turbo-amdnpu-onnx
+    python test_server.py txt2img --model-path C:/models/stable-diffusion-turbo-amdnpu-onnx
 
     # Test all models (auto-launches server per model):
-    python run_tests.py txt2img --all-models
+    python test_server.py txt2img --all-models
 
     # img2img (needs VAE encoder):
-    python run_tests.py img2img --all-models
+    python test_server.py img2img --all-models
 
     # ControlNet (only runs on models that declare controlnet capability):
-    python run_tests.py controlnet --all-models
-    python run_tests.py controlnet --model-path C:/models/sd3-medium --types canny depth
+    python test_server.py controlnet --all-models
+    python test_server.py controlnet --model-path C:/models/sd3-medium --types canny depth
 
     # CLI mode (no server, runs executable directly):
-    python run_tests.py cli --all-models
-    python run_tests.py cli --model-path C:/models/stable-diffusion-turbo-amdnpu-onnx
+    python test_server.py cli --all-models
+    python test_server.py cli --model-path C:/models/stable-diffusion-turbo-amdnpu-onnx
 """
 
 import argparse
@@ -48,8 +48,7 @@ from PIL import Image
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 MODELS_JSON = SCRIPT_DIR / "models.json"
-DEFAULT_MODELS_DIR = Path(r"C:\Users\mickraus\sd_models\1.7.1_models")
-RC3_MODELS_DIR = Path(r"C:\Users\mickraus\Work\RC3_test\GenAI-SD\models")
+DEFAULT_MODELS_DIR = Path(r"C:\Users\mickraus\Work\rai_1.8.0_models")
 OUTPUT_DIR = PROJECT_ROOT / "test_outputs"
 
 
@@ -71,28 +70,138 @@ def get_model_config(config, model_name):
 
 
 def discover_models(models_dir, mode, config):
-    """Find models in directory that support the given mode."""
-    if not models_dir.exists():
-        print(f"ERROR: Models directory not found: {models_dir}")
-        sys.exit(1)
+    """Find models in directory (or HF cache) that support the given mode.
 
-    available = sorted(d.name for d in models_dir.iterdir() if d.is_dir() and not d.name.startswith("."))
-    if not available:
-        print(f"ERROR: No model directories found in {models_dir}")
+    Includes models that are:
+    - Present as a flat directory under models_dir, OR
+    - Registered in models.json with an hf_repo_id whose HF snapshot already exists
+      (downloaded by Lemonade or a prior test run).
+    """
+    found_names: set = set()
+
+    # Flat directories under models_dir
+    if models_dir.exists():
+        for d in models_dir.iterdir():
+            if d.is_dir() and not d.name.startswith("."):
+                found_names.add(d.name)
+
+    # Models registered in models.json that are in the HF cache
+    for name, model_cfg in config["models"].items():
+        if name in found_names:
+            continue
+        repo_id = model_cfg.get("hf_repo_id")
+        if repo_id and get_hf_snapshot_path(repo_id) is not None:
+            found_names.add(name)
+
+    if not found_names:
+        print(f"ERROR: No models found in {models_dir} or HF cache")
         sys.exit(1)
 
     # Filter to models that support this mode
     result = []
-    for name in available:
+    for name in sorted(found_names):
         model_cfg = config["models"].get(name)
         if model_cfg is None:
-            # Unknown model — include it for txt2img/cli (safe defaults), skip for specialized modes
             if mode in ("txt2img", "cli"):
                 result.append(name)
         elif mode in model_cfg.get("capabilities", []):
             result.append(name)
 
     return result
+
+
+# ─── Model Auto-Download ─────────────────────────────────────────────────────
+
+def _hf_hub_cache() -> Path:
+    """Return the HuggingFace hub cache root, matching Lemonade's C++ resolution order.
+
+    Priority: HF_HUB_CACHE env var > HF_HOME/hub env var > ~/.cache/huggingface/hub
+    This mirrors lemonade's resolve_hf_cache_dir() in path_utils.cpp.
+    """
+    import os
+    if val := os.environ.get("HF_HUB_CACHE"):
+        return Path(val)
+    if val := os.environ.get("HF_HOME"):
+        return Path(val) / "hub"
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        return Path(HF_HUB_CACHE)
+    except ImportError:
+        return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _repo_id_to_cache_name(repo_id: str) -> str:
+    """Convert 'org/repo' to 'models--org--repo' (Lemonade / HF hub convention)."""
+    return "models--" + repo_id.replace("/", "--")
+
+
+def get_hf_snapshot_path(hf_repo_id: str) -> Optional[Path]:
+    """Return the active HF-cache snapshot directory for a repo, or None if not cached.
+
+    Reads <HF_HUB_CACHE>/models--org--repo/refs/main to find the commit hash,
+    then returns snapshots/<hash>/ if it exists.  This is the same lookup
+    Lemonade's RyzenAISDOps::resolve_checkpoint_path() performs in C++.
+    """
+    model_cache = _hf_hub_cache() / _repo_id_to_cache_name(hf_repo_id)
+    refs_main = model_cache / "refs" / "main"
+    if not refs_main.exists():
+        return None
+    commit = refs_main.read_text(encoding="utf-8").strip()
+    if not commit:
+        return None
+    snapshot = model_cache / "snapshots" / commit
+    return snapshot if snapshot.exists() else None
+
+
+def ensure_model_present(flat_path: Path, model_cfg: dict) -> Optional[Path]:
+    """Resolve the usable model directory, downloading from HF if necessary.
+
+    Resolution order (returns first hit):
+      1. Flat local path (e.g. rai_1.8.0_models/<name>/) — backward compat.
+      2. HF hub cache snapshot — lets Lemonade and this test share one copy.
+      3. Download via snapshot_download() to the HF hub cache (no local_dir),
+         so the download is also visible to Lemonade without a second download.
+
+    Returns the usable Path, or None on failure.
+    """
+    # 1. Flat local path
+    if flat_path.exists():
+        return flat_path
+
+    repo_id = model_cfg.get("hf_repo_id")
+
+    # 2. HF cache (already downloaded, possibly by Lemonade)
+    if repo_id:
+        snapshot = get_hf_snapshot_path(repo_id)
+        if snapshot is not None:
+            print(f"  Found in HF cache: {snapshot}")
+            return snapshot
+
+    # 3. Download
+    if not repo_id:
+        print(f"  ERROR: Model not found at {flat_path} and no hf_repo_id defined")
+        return None
+
+    print(f"  Model not found locally — downloading {repo_id} from HuggingFace...")
+    try:
+        from huggingface_hub import snapshot_download
+        # No local_dir → downloads to HF hub cache, same location Lemonade reads.
+        # snapshot_download returns the snapshot directory path directly.
+        snapshot_path = snapshot_download(
+            repo_id=repo_id,
+            ignore_patterns=[".cache/**", "__pycache__/**"],
+            resume_download=True,
+        )
+        resolved = Path(snapshot_path)
+        print(f"  Download complete: {resolved}")
+        return resolved
+    except Exception as e:
+        msg = str(e)
+        if "401" in msg or "403" in msg or "credentials" in msg.lower() or "token" in msg.lower():
+            print(f"  ERROR: Authentication required — run 'huggingface-cli login' first")
+        else:
+            print(f"  ERROR downloading {repo_id}: {msg}")
+        return None
 
 
 # ─── Server Management ───────────────────────────────────────────────────────
@@ -141,12 +250,12 @@ def launch_server(model_path, port, extra_args=None, timeout=300):
             return proc
         if proc.poll() is not None:
             print(f"  ERROR: Server exited early (code {proc.returncode})")
-            sys.exit(1)
+            return None
         time.sleep(2)
 
     proc.terminate()
     print(f"  ERROR: Server did not become ready within {timeout}s")
-    sys.exit(1)
+    return None
 
 
 def stop_server(proc):
@@ -370,9 +479,6 @@ def run_tests(args):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine which models to test
-    if getattr(args, "rc3", False):
-        args.models_dir = str(RC3_MODELS_DIR)
-
     if args.all_models:
         models_dir = Path(args.models_dir)
         model_names = discover_models(models_dir, mode, config)
@@ -389,18 +495,29 @@ def run_tests(args):
 
     for model_name in model_names:
         model_cfg = get_model_config(config, model_name)
-        model_path = Path(args.models_dir) / model_name if args.all_models else Path(args.model_path or "")
+        # flat_path is used as the first lookup; the resolved path may differ (HF cache)
+        flat_path = Path(args.models_dir) / model_name if args.all_models else Path(args.model_path or "")
 
         print(f"\n{'='*72}")
         print(f"  {model_name}  [{mode}]")
         print(f"  {model_cfg['width']}x{model_cfg['height']}  steps={model_cfg['steps']}  guidance={model_cfg['guidance']}")
         print(f"{'='*72}")
 
+        # Resolve the actual model path (flat dir, HF cache snapshot, or download)
+        model_path = ensure_model_present(flat_path, model_cfg)
+        if model_path is None:
+            results.append({"model": model_name, "mode": mode, "success": False, "detail": "Model not found and could not be downloaded"})
+            continue
+
         # For server modes: launch server if needed
         proc = None
         if mode != "cli":
             if args.all_models or (args.model_path and not server_is_up(url)):
                 proc = launch_server(model_path, port)
+                if proc is None:
+                    results.append({"model": model_name, "mode": mode, "success": False, "detail": "Server failed to start"})
+                    print(f"  [FAIL] Server failed to start — skipping")
+                    continue
 
         try:
             if mode == "txt2img":
@@ -496,23 +613,23 @@ Model selection (pick one):
         epilog="""
 Examples:
   # Test against a running server:
-  python run_tests.py txt2img --url http://localhost:8080
+  python test_server.py txt2img --url http://localhost:8080
 
   # Auto-launch server for a specific model:
-  python run_tests.py txt2img --model-path C:/models/stable-diffusion-turbo-amdnpu-onnx
+  python test_server.py txt2img --model-path C:/models/stable-diffusion-turbo-amdnpu-onnx
 
   # Test all models (auto-launches server per model):
-  python run_tests.py txt2img --all-models
+  python test_server.py txt2img --all-models
 
   # img2img for all models that have a VAE encoder:
-  python run_tests.py img2img --all-models
+  python test_server.py img2img --all-models
 
   # ControlNet — only specific types:
-  python run_tests.py controlnet --all-models --types canny depth
+  python test_server.py controlnet --all-models --types canny depth
 
   # CLI mode (no server, runs executable directly):
-  python run_tests.py cli --model-path C:/models/stable-diffusion-turbo-amdnpu-onnx
-  python run_tests.py cli --all-models
+  python test_server.py cli --model-path C:/models/stable-diffusion-turbo-amdnpu-onnx
+  python test_server.py cli --all-models
 
 Notes:
   - Model configs (resolution, steps, guidance, capabilities) live in models.json.
@@ -538,8 +655,6 @@ Notes:
     parser.add_argument("--url", help="Server URL (skip auto-launch, test against running server)")
     parser.add_argument("--port", type=int, default=8080, help="Port for auto-launched server (default: 8080)")
     parser.add_argument("--models-dir", default=str(DEFAULT_MODELS_DIR), help="Directory containing model folders")
-    parser.add_argument("--rc3", action="store_true",
-                        help=f"Use RC3 models directory ({RC3_MODELS_DIR})")
     parser.add_argument("--model-name", help="Model name (used with --url when server is already running)")
 
     # Overrides

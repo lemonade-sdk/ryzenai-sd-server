@@ -39,3 +39,7 @@ Thumbs.db
 
 # Test outputs
 test_outputs/
+*.png
+*.log
+*.pyc
+flux2_test.rgb

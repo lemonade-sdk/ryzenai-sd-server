@@ -2,25 +2,23 @@
 // Copyright (C) 2025 Advanced Micro Devices, Inc.
 //
 // FLUX models use a transformer-based denoiser (not UNet), the FlowMatch Euler
-// scheduler, and a 16-channel VAE. Text conditioning uses CLIP-L; T5-XXL is
-// optional (FLUX.1-schnell ships T5 as a GPTQ binary, not ONNX, so it is not
-// loaded by the server — the transformer still runs using CLIP-only conditioning).
-//
-// DenoiserSpec notes:
-//   - seq_len / embed_dim describe the CLIP-L output (77 tokens, 768 dim).
-//     The GenericDenoiser creates the encoder_hidden_states tensor with exactly
-//     these dimensions. If the ONNX transformer expects a larger T5-shaped input,
-//     update seq_len / embed_dim to match (GenericDenoiser zero-pads from our
-//     CLIP data into the declared shape automatically).
-//   - pool_dim = 768 (CLIP-L pooled output).
-//   - latent_ch = 16 (shared with SD3, same VAE architecture).
+// scheduler, and a 16-channel VAE. Text conditioning uses T5-XXL for
+// encoder_hidden_states and CLIP-L for pooled_projections.
 
 #include "variant_registry.h"
 #include "variants/flux_text_encoder.h"
 #include "variants/flux_vae_decoder.h"
+#include "variants/flux2_text_encoder.h"
+#include "variants/flux2_denoiser.h"
+#include "variants/flux2_vae_decoder.h"
 #include "variants/generic_denoiser.h"
+#include "t5_tokenizer.h"
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <iostream>
+
+namespace fs = std::filesystem;
 
 namespace sd_npu {
 
@@ -61,6 +59,8 @@ static VariantDescriptor make_flux1_schnell_descriptor() {
         {"text_encoder", ComponentType::TEXT_ENCODER, true,
          {"text_encoder/model.onnx",
           "text_encoder/text_encoder.onnx"}, false},
+        {"text_encoder_2", ComponentType::TEXT_ENCODER_2, false,
+         {"text_encoder_2/model.onnx"}, false},
         {"transformer", ComponentType::TRANSFORMER, true,
          {"transformer/dynamic/dd/replaced.onnx",
           "transformer/dd/replaced.onnx"}, false},
@@ -78,7 +78,7 @@ static VariantDescriptor make_flux1_schnell_descriptor() {
         namespace fs = std::filesystem;
         if (!fs::exists(base / "transformer")) return 0;
         if (fs::exists(base / "normal" / "transformer")) return 0;  // SD3 layout
-        if (fs::exists(base / "text_encoder_2")) return 0;          // SDXL/SD3 layout
+        if (fs::exists(base / "unet")) return 0;                    // SDXL/SD15 layout
         const auto lower = to_lower_str(base.string());
         if (lower.find("flux") == std::string::npos) return 0;
         // FLUX.1-schnell: has GPTQ T5 dir OR "schnell" in path
@@ -89,17 +89,48 @@ static VariantDescriptor make_flux1_schnell_descriptor() {
     };
 
     d.create_encoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components,
-                           CLIPTokenizer& tok, CLIPTokenizer&, const SDConfig&)
+                           CLIPTokenizer& tok, CLIPTokenizer&, const SDConfig& cfg)
         -> std::unique_ptr<ITextEncoder> {
-        return std::make_unique<FluxTextEncoder>(components, tok, /*is_schnell=*/true);
+        // Derive model root from the text_encoder_2 or text_encoder path
+        std::unique_ptr<T5Tokenizer> t5_tok;
+        // FLUX transformer RoPE (RopeCachePack) requires the text sequence length
+        // to be divisible by 8; the reference schnell pipeline uses 256. The global
+        // default (83, SD3-oriented) is not valid here, so snap to 256 unless the
+        // user supplied an explicit multiple of 8.
+        int t5_seq_len = (cfg.t5_sequence_len > 0 && cfg.t5_sequence_len % 8 == 0)
+                             ? cfg.t5_sequence_len : 256;
+        auto it = cfg.component_paths.find("text_encoder_2");
+        if (it != cfg.component_paths.end()) {
+            namespace fs = std::filesystem;
+            // text_encoder_2/model.onnx -> parent->parent = model root
+            fs::path spiece = fs::path(it->second).parent_path().parent_path()
+                              / "tokenizer_2" / "spiece.model";
+            if (fs::exists(spiece)) {
+                try {
+                    t5_tok = std::make_unique<T5Tokenizer>(spiece.string());
+                    std::cout << "[FLUX] T5 tokenizer loaded from: " << spiece << std::endl;
+                } catch (const std::exception& e) {
+                    std::cerr << "[FLUX] Warning: failed to load T5 tokenizer: "
+                              << e.what() << std::endl;
+                }
+            } else {
+                std::cout << "[FLUX] tokenizer_2/spiece.model not found, T5 disabled" << std::endl;
+            }
+        }
+        return std::make_unique<FluxTextEncoder>(
+            components, tok, /*is_schnell=*/true, std::move(t5_tok), t5_seq_len);
     };
     d.create_denoiser = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components,
-                           ControlNetRunner*, const SDConfig&)
+                           ControlNetRunner*, const SDConfig& cfg)
         -> std::unique_ptr<IDenoiser> {
-        // seq_len=77, embed_dim=768: CLIP-L dimensions. Update if the ONNX
-        // transformer declares a different encoder_hidden_states shape.
+        // encoder_hidden_states: T5 [B, t5_seq_len, 4096]
+        // pooled_projections:    CLIP [B, 768]
+        // Must match the encoder's padded length and be divisible by 8 (RoPE).
+        int t5_seq = (cfg.t5_sequence_len > 0 && cfg.t5_sequence_len % 8 == 0)
+                         ? cfg.t5_sequence_len : 256;
         return std::make_unique<GenericDenoiser>(
-            components, DenoiserSpec{ComponentType::TRANSFORMER, 77, 768, 768, 16});
+            components, DenoiserSpec{ComponentType::TRANSFORMER, t5_seq, 4096, 768, 16,
+                                     /*disable_cfg=*/true, /*timestep_scale=*/0.001f});
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
@@ -128,14 +159,15 @@ static VariantDescriptor make_flux2_klein_descriptor() {
     d.default_height   = 1024;
     d.default_steps    = 20;
     d.default_guidance = 0.0f;  // guidance_embeds=false in config
-    d.latent_channels  = 16;
+    d.latent_channels  = 32;    // VAE has 32 channels (packed to 128 for the transformer)
     d.default_scheduler = SchedulerType::FLOW_MATCH_EULER;
 
     d.has_common_dir = false;
 
     d.components = {
         {"text_encoder", ComponentType::TEXT_ENCODER, true,
-         {"text_encoder/model.onnx",
+         {"text_encoder/qwen3_text_encoder_prompt_embeds_matmulnbits.onnx",
+          "text_encoder/model.onnx",
           "text_encoder/text_encoder.onnx"}, false},
         {"transformer", ComponentType::TRANSFORMER, true,
          {"transformer/dynamic/dd/replaced.onnx",
@@ -163,22 +195,35 @@ static VariantDescriptor make_flux2_klein_descriptor() {
     };
 
     d.create_encoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components,
-                           CLIPTokenizer& tok, CLIPTokenizer&, const SDConfig&)
+                           CLIPTokenizer&, CLIPTokenizer&, const SDConfig& cfg)
         -> std::unique_ptr<ITextEncoder> {
-        return std::make_unique<FluxTextEncoder>(components, tok, /*is_schnell=*/true);
+        // Derive model root from the text_encoder component path
+        // (<root>/text_encoder/<file>.onnx -> parent->parent = <root>).
+        std::string model_root;
+        auto it = cfg.component_paths.find("text_encoder");
+        if (it != cfg.component_paths.end()) {
+            model_root = fs::path(it->second).parent_path().parent_path().string();
+        }
+        return std::make_unique<Flux2TextEncoder>(components, model_root, /*max_seq=*/256);
     };
     d.create_denoiser = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components,
-                           ControlNetRunner*, const SDConfig&)
+                           ControlNetRunner*, const SDConfig& cfg)
         -> std::unique_ptr<IDenoiser> {
-        // FLUX.2-klein uses joint_attention_dim=7680 in its transformer config;
-        // this may require a custom embedding shape. Using CLIP-L dims (77, 768)
-        // as a starting point — update if the ONNX declares different input shapes.
-        return std::make_unique<GenericDenoiser>(
-            components, DenoiserSpec{ComponentType::TRANSFORMER, 77, 768, 0, 16});
+        // Model root for BatchNorm denorm stats (bn.running_x.safetensors):
+        // any <root>/<comp>/... path -> parent->parent = <root> for the flat
+        // (non-DD) layout, but transformer/vae use nested dd dirs, so prefer the
+        // text_encoder path which is <root>/text_encoder/<file>.onnx.
+        std::string model_root;
+        auto it = cfg.component_paths.find("text_encoder");
+        if (it != cfg.component_paths.end()) {
+            model_root = fs::path(it->second).parent_path().parent_path().string();
+        }
+        return std::make_unique<Flux2Denoiser>(
+            components, model_root, /*text_seq_len=*/256, /*text_embed_dim=*/7680);
     };
     d.create_vae_decoder = [](std::map<ComponentType, std::unique_ptr<OnnxModel>>& components)
         -> std::unique_ptr<IVaeDecoder> {
-        return std::make_unique<FluxVaeDecoder>(components);
+        return std::make_unique<Flux2VaeDecoder>(components);
     };
 
     return d;

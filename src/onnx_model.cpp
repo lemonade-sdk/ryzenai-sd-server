@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <algorithm>
 #include <chrono>
+#include <unordered_map>
+#include <vector>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -14,20 +16,6 @@
 namespace fs = std::filesystem;
 
 namespace sd_npu {
-
-// ============================================================================
-// Global custom ops path
-// ============================================================================
-
-static std::string g_custom_ops_path;
-
-void set_custom_ops_path(const std::string& path) {
-    g_custom_ops_path = path;
-}
-
-const std::string& get_custom_ops_path() {
-    return g_custom_ops_path;
-}
 
 // ============================================================================
 // OnnxModel Implementation
@@ -57,44 +45,89 @@ OnnxModel::OnnxModel(const std::string& model_path,
 
     bool has_cache = fs::exists(cache_dir) || fs::exists(dot_cache_dir);
     if (has_cache) {
-        std::cout << "  Found DD cache: " << model_dir.string() << std::endl;
-        std::string dd_posix = model_dir.string();
+        fs::path actual_cache = fs::exists(cache_dir) ? cache_dir : dot_cache_dir;
+        std::cout << "  Found DD cache: " << actual_cache.string() << std::endl;
+        std::string dd_posix = actual_cache.string();
         std::replace(dd_posix.begin(), dd_posix.end(), '\\', '/');
-        model_options.AddConfigEntry("dd_cache", dd_posix.c_str());
-        model_options.AddConfigEntry("onnx_custom_ops_const_key", model_path.c_str());
-    }
 
-    // Register custom ops library only for NPU models (those with DD cache).
-    // CPU-only models (text encoders) don't need custom ops, and loading the
-    // VitisAI EP for them adds tens of seconds of unnecessary overhead.
-    if (has_cache && !g_custom_ops_path.empty() && fs::exists(g_custom_ops_path)) {
-        std::cout << "  Registering custom ops: " << g_custom_ops_path << std::endl;
-        auto start_custom_ops = std::chrono::high_resolution_clock::now();
+        // RyzenAI 1.8 DynamicDispatch / NPU models require the RyzenAI plugin
+        // execution provider ("RyzenAILightExecutionProvider") to be registered on
+        // the OrtEnv and appended to the session — this mirrors the working GenAI-SD
+        // python reference (config_session_options in src/utils/common.py).
+        // Calling RegisterCustomOpsLibrary WITHOUT appending the EP crashes inside
+        // onnxruntime_providers_ryzenai.dll during graph partitioning (0xC0000005).
+        static const char* k_ep_name = "RyzenAILightExecutionProvider";
+        static const wchar_t* k_ops_dll = L"onnxruntime_providers_ryzenai.dll";
+        fs::path ops_path;
 #ifdef _WIN32
-        // Add the custom ops directory to DLL search path so dependencies are found
-        std::wstring wide_ops_path(g_custom_ops_path.begin(), g_custom_ops_path.end());
-        auto ops_dir = fs::path(g_custom_ops_path).parent_path().wstring();
-        SetDllDirectoryW(ops_dir.c_str());
-        AddDllDirectory(ops_dir.c_str());
-        HMODULE hMod = LoadLibraryW(wide_ops_path.c_str());
-        if (!hMod) {
-            // Try LoadLibraryExW with LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
-            hMod = LoadLibraryExW(wide_ops_path.c_str(), nullptr,
-                                  LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        wchar_t exe_buf[MAX_PATH] = {};
+        if (GetModuleFileNameW(nullptr, exe_buf, MAX_PATH) > 0)
+            ops_path = fs::path(exe_buf).parent_path() / k_ops_dll;
+        if (!fs::exists(ops_path))
+            ops_path = L"C:/Program Files/RyzenAI/1.8.0/deployment/onnxruntime_providers_ryzenai.dll";
+        if (fs::exists(ops_path)) {
+            std::wstring ops_dir = ops_path.parent_path().wstring();
+            AddDllDirectory(ops_dir.c_str());
+
+            // Register the EP plugin library on the Env exactly once per process.
+            static bool ep_registered = false;
+            if (!ep_registered) {
+                std::cout << "  Registering RyzenAI EP: " << ops_path.string() << std::endl;
+                // Pre-load with LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR so dependencies
+                // (vaiml.dll, dyn_dispatch_core.dll, ...) resolve from the ops dir.
+                HMODULE hOps = LoadLibraryExW(
+                    ops_path.wstring().c_str(), nullptr,
+                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+                if (!hOps)
+                    hOps = LoadLibraryExW(ops_path.wstring().c_str(), nullptr,
+                                          LOAD_WITH_ALTERED_SEARCH_PATH);
+                if (!hOps)
+                    std::cerr << "  Warning: failed to pre-load RyzenAI EP DLL (error "
+                              << GetLastError() << ")" << std::endl;
+                // chdir to the DLL dir during registration (matches python register_ep).
+                wchar_t prev_cwd[MAX_PATH] = {};
+                GetCurrentDirectoryW(MAX_PATH, prev_cwd);
+                SetCurrentDirectoryW(ops_dir.c_str());
+                try {
+                    env.RegisterExecutionProviderLibrary(k_ep_name, ops_path.wstring());
+                    ep_registered = true;
+                } catch (const std::exception& e) {
+                    std::cerr << "  Warning: RegisterExecutionProviderLibrary failed: "
+                              << e.what() << std::endl;
+                }
+                SetCurrentDirectoryW(prev_cwd);
+            }
+
+            // Append the RyzenAI EP to this session with DynamicDispatch options.
+            try {
+                std::vector<Ort::ConstEpDevice> ryzen_devices;
+                for (const auto& dev : env.GetEpDevices()) {
+                    const char* name = dev.EpName();
+                    if (name && std::string(name) == k_ep_name)
+                        ryzen_devices.push_back(dev);
+                }
+                if (!ryzen_devices.empty()) {
+                    std::unordered_map<std::string, std::string> ep_options = {
+                        {"dd_cache", dd_posix},
+                        {"onnx_custom_ops_const_key", ""},
+                        {"compile_fusion_rt", "0"},
+                    };
+                    std::cout << "  Appending RyzenAI EP (" << ryzen_devices.size()
+                              << " device(s)) with dd_cache=" << dd_posix << std::endl;
+                    model_options.AppendExecutionProvider_V2(env, ryzen_devices, ep_options);
+                } else {
+                    std::cerr << "  Warning: no RyzenAI EP devices found after registration"
+                              << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "  Warning: AppendExecutionProvider_V2 failed: "
+                          << e.what() << std::endl;
+            }
+
+            // Also register the custom ops library (com.ryzenai CPU fallback ops).
+            model_options.RegisterCustomOpsLibrary(ops_path.wstring().c_str());
         }
-        if (!hMod) {
-            std::cerr << "  Warning: LoadLibraryW failed for custom ops (error "
-                      << GetLastError() << ")" << std::endl;
-        }
-        model_options.RegisterCustomOpsLibrary(wide_ops_path.c_str());
-        SetDllDirectoryW(nullptr);  // restore default search order
-#else
-        std::wstring wide_path(g_custom_ops_path.begin(), g_custom_ops_path.end());
-        model_options.RegisterCustomOpsLibrary(wide_path.c_str());
 #endif
-        auto end_custom_ops = std::chrono::high_resolution_clock::now();
-        std::cout << "  [TIMING] Custom ops registration: " 
-                  << std::chrono::duration<double, std::milli>(end_custom_ops - start_custom_ops).count() << " ms" << std::endl;
     }
 
     // Create session
