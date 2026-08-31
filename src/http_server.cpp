@@ -357,6 +357,19 @@ std::string SDServer::load_model(const std::string& model_path) {
             return "No ONNX model components found in: " + normalized_path;
         }
 
+        // Release the current pipeline before building the new one. The
+        // RyzenAI NPU EP allocates a shared instruction buffer sized by
+        // whichever model loads first (see the load_priority comment in
+        // load_onnx_models()); keeping the old and new pipeline's ONNX Runtime
+        // sessions alive at the same time lets their NPU EP contexts collide
+        // when the new model needs different buffer sizing (e.g. switching to
+        // a different resolution/architecture), which crashes the process
+        // mid-swap instead of just failing the load cleanly.
+        {
+            std::lock_guard<std::mutex> lock(pipeline_mutex_);
+            pipeline_.reset();
+        }
+
         // Create new pipeline (this is the slow part - model loading)
         auto start = std::chrono::high_resolution_clock::now();
         auto new_pipeline = std::make_unique<SDPipeline>(new_config);
@@ -376,6 +389,16 @@ std::string SDServer::load_model(const std::string& model_path) {
         return "";
 
     } catch (const std::exception& e) {
+        // The old pipeline may already have been released above, so on
+        // failure there may be no model loaded at all -- reflect that in
+        // current_model_path_ rather than leaving it pointing at a pipeline
+        // that no longer exists.
+        {
+            std::lock_guard<std::mutex> lock(pipeline_mutex_);
+            if (!pipeline_) {
+                current_model_path_.clear();
+            }
+        }
         return std::string("Failed to load model: ") + e.what();
     }
 }
@@ -620,6 +643,11 @@ void SDServer::run() {
             bool any_success = false;
             {
                 std::lock_guard<std::mutex> lock(pipeline_mutex_);
+                if (!pipeline_) {
+                    res.status = 503;
+                    res.set_content(R"({"error":{"message":"No model loaded","type":"server_error"}})", "application/json");
+                    return;
+                }
                 for (int i = 0; i < n; i++) {
                     SDConfig img_config = req_config;
                     img_config.seed = req_config.seed + i;
@@ -787,6 +815,11 @@ void SDServer::run() {
             int resp_width = req_config.width, resp_height = req_config.height;
             {
                 std::lock_guard<std::mutex> lock(pipeline_mutex_);
+                if (!pipeline_) {
+                    res.status = 503;
+                    res.set_content(R"({"error":{"message":"No model loaded","type":"server_error"}})", "application/json");
+                    return;
+                }
                 pipeline_->update_config(req_config);
 
                 // Generate all requested images
@@ -926,6 +959,11 @@ void SDServer::run() {
             int resp_width = req_config.width, resp_height = req_config.height;
             {
                 std::lock_guard<std::mutex> lock(pipeline_mutex_);
+                if (!pipeline_) {
+                    res.status = 503;
+                    res.set_content(R"({"error":{"message":"No model loaded","type":"server_error"}})", "application/json");
+                    return;
+                }
                 for (int i = 0; i < n; i++) {
                     // Use different seed for each variation
                     SDConfig img_config = req_config;
