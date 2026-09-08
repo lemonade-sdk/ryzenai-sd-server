@@ -15,7 +15,7 @@ permissions:
 jobs:
   build-and-test:
     name: Build and Test RyzenAI SD Server
-    runs-on: [self-hosted, Windows]
+    runs-on: [self-hosted, Windows, strix-halo, devlab-dispatch]
     steps:
       - uses: actions/checkout@v4
         with:
