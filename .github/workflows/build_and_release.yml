@@ -213,6 +213,8 @@ jobs:
 
       - name: Test all models
         shell: PowerShell
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
 
