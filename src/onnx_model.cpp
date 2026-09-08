@@ -83,9 +83,9 @@ OnnxModel::OnnxModel(const std::string& model_path,
 
     // Check for external data file (.onnx.data)
     std::string data_path = model_path + ".data";
-    if (fs::exists(data_path)) {
+    bool has_external_data = fs::exists(data_path);
+    if (has_external_data) {
         std::cout << "  Found external data: " << data_path << std::endl;
-        model_options.AddConfigEntry("external_data_file", data_path.c_str());
     }
 
     // Check for DD cache directory - MUST be set BEFORE registering custom ops
@@ -162,6 +162,14 @@ OnnxModel::OnnxModel(const std::string& model_path,
                         {"onnx_custom_ops_const_key", ""},
                         {"compile_fusion_rt", "0"},
                     };
+                    if (has_external_data) {
+                        // Pass external_data_file as a namespaced EP option
+                        // (arrives as "ep.ryzenailightexecutionprovider.external_data_file").
+                        // The unprefixed SessionOptions.AddConfigEntry form is deprecated
+                        // and crashes (0xC0000005) during graph partitioning for large
+                        // external-data models such as the SD3 transformer.
+                        ep_options["external_data_file"] = data_path;
+                    }
                     std::cout << "  Appending RyzenAI EP (" << ryzen_devices.size()
                               << " device(s)) with dd_cache=" << dd_posix << std::endl;
                     model_options.AppendExecutionProvider_V2(env, ryzen_devices, ep_options);
