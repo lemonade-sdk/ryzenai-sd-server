@@ -283,7 +283,7 @@ jobs:
 
               # Run txt2img test (launches server, generates image, shuts down)
               Write-Host "Running txt2img test for $modelName..." -ForegroundColor Cyan
-              python test/test_server.py txt2img --model-path $modelDir --port 8090
+              python test/test_txt2img.py --model-path $modelDir --port 8090
 
               if ($LASTEXITCODE -ne 0) {
                   Write-Host "ERROR: Tests failed for $modelName!" -ForegroundColor Red
