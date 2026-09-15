@@ -212,11 +212,12 @@ namespace {
     }
 
     // Parse sd_cpp_extra_args embedded in prompt by Lemonade
-    // Format: <sd_cpp_extra_args>{"steps":20,"cfg_scale":7.0,"seed":42}</sd_cpp_extra_args>
+    // Format: <sd_cpp_extra_args>{"steps":20,"cfg_scale":7.0,"seed":42,"strength":0.75}</sd_cpp_extra_args>
     struct ExtraArgs {
         int steps = -1;           // -1 means use default
         float cfg_scale = -1.0f;  // -1 means use default
         int seed = -1;            // -1 means use default
+        float strength = -1.0f;   // -1 means use default
         std::string clean_prompt; // prompt with extra_args tag removed
     };
 
@@ -238,7 +239,7 @@ namespace {
                 args.clean_prompt.pop_back();
             }
 
-            // Simple JSON parsing for steps, cfg_scale, seed
+            // Simple JSON parsing for steps, cfg_scale, seed, strength
             // Parse "steps":N
             std::regex steps_regex(R"("steps"\s*:\s*(\d+))");
             if (std::regex_search(json_str, match, steps_regex)) {
@@ -255,6 +256,12 @@ namespace {
             std::regex seed_regex(R"("seed"\s*:\s*(-?\d+))");
             if (std::regex_search(json_str, match, seed_regex)) {
                 args.seed = std::stoi(match[1].str());
+            }
+
+            // Parse "strength":N.N
+            std::regex strength_regex(R"("strength"\s*:\s*([\d.]+))");
+            if (std::regex_search(json_str, match, strength_regex)) {
+                args.strength = std::stof(match[1].str());
             }
         }
 
@@ -776,6 +783,9 @@ void SDServer::run() {
             if (req.form.has_field("strength")) {
                 try { req_config.strength = std::stof(req.form.get_field("strength")); } catch (...) {}
             }
+            if (extra.strength >= 0.0f) {
+                req_config.strength = extra.strength;
+            }
 
             std::cout << "  prompt: \"" << clean_prompt << "\"" << std::endl;
             std::cout << "  size: " << req_config.width << "x" << req_config.height << std::endl;
@@ -925,12 +935,13 @@ void SDServer::run() {
                 try { req_config.strength = std::stof(req.form.get_field("strength")); } catch (...) {}
             }
 
-            // Parse extra args embedded in prompt (Lemonade embeds steps, cfg_scale, seed)
+            // Parse extra args embedded in prompt (Lemonade embeds steps, cfg_scale, seed, strength)
             auto extra = parse_extra_args(prompt.empty() ? "" : prompt);
             std::string clean_prompt = extra.clean_prompt.empty() ? "image variation" : extra.clean_prompt;
             if (extra.steps > 0)        req_config.num_inference_steps = extra.steps;
             if (extra.cfg_scale >= 0.f) req_config.guidance_scale = extra.cfg_scale;
             if (extra.seed >= 0)        req_config.seed = extra.seed;
+            if (extra.strength >= 0.f)  req_config.strength = extra.strength;
 
             std::cout << "  prompt: \"" << clean_prompt << "\"" << std::endl;
             std::cout << "  size: " << req_config.width << "x" << req_config.height << std::endl;
