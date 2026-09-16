@@ -27,6 +27,7 @@ python test_txt2img.py --all-models
 | `test_variants.py` | Unprompted image variations via `/v1/images/variations` | [Jump to usage](#test_variantspy) |
 | `test_controlnet.py` | ControlNet-guided generation via `/v1/images/edits` | [Jump to usage](#test_controlnetpy) |
 | `test_cli.py` | One-shot executable invocation, no server | [Jump to usage](#test_clipy) |
+| `test_extra_args_tag.py` | `steps`/`cfg_scale`/`seed`/`strength` carried only by the `<sd_cpp_extra_args>` prompt tag (no plain fields), on both `/v1/images/edits` and `/v1/images/variations` | [Jump to usage](#test_extra_args_tagpy) |
 
 ## Scripts
 
@@ -37,6 +38,13 @@ python test_txt2img.py --all-models
 | `test_variants.py` | `/v1/images/variations` | no (true unprompted OpenAI-style variation) | yes |
 | `test_controlnet.py` | `/v1/images/edits` | yes | no |
 | `test_cli.py` | n/a — runs the executable directly, no server | yes | n/a |
+| `test_extra_args_tag.py` | `/v1/images/edits`, `/v1/images/variations` | yes (tag-only, no plain numeric fields) | yes |
+
+`test_extra_args_tag.py` sends the exact same wire format Lemonade uses in
+production (`RyzenAISDServer::image_edits()`/`image_variations()` embed every
+parameter in the tag, never as plain fields) — this is the coverage that
+would have caught the `strength` field being silently ignored when carried
+only by the tag (fixed in `parse_extra_args()`/`ExtraArgs`).
 
 `test_img2img.py` and `test_variants.py` hit the same server endpoint and
 only differ in whether a `prompt` field is sent. Both use models.json's
@@ -89,6 +97,10 @@ python test_controlnet.py --all-models --types canny depth
 # CLI mode — no server, runs the executable directly
 python test_cli.py --model-path C:\models\sd-turbo-amdnpu-onnx
 python test_cli.py --all-models
+
+# extra_args tag — verify steps/cfg_scale/seed/strength carried only by the
+# <sd_cpp_extra_args> tag (no plain fields), matching Lemonade's convention
+python test_extra_args_tag.py --all-models
 
 # Dry run — validate config and show what would be tested, no server/model files needed
 python test_txt2img.py --all-models --dry-run
@@ -211,6 +223,26 @@ python test_cli.py --model-path C:\models\sd-turbo-amdnpu-onnx --level detailed
 python test_cli.py --all-models
 ```
 
+<a id="test_extra_args_tagpy"></a>
+### `test_extra_args_tag.py`
+
+Sends `steps`/`cfg_scale`/`seed`/`strength` embedded **only** in the
+`<sd_cpp_extra_args>{...}</sd_cpp_extra_args>` prompt tag — no plain
+multipart fields for any of them — on both `/v1/images/edits` and
+`/v1/images/variations`. This is the exact calling convention Lemonade uses
+in production (`RyzenAISDServer` never sends those as plain fields), as
+opposed to `test_img2img.py`/`test_variants.py`, which use plain fields.
+
+**Common use cases:**
+
+```bash
+# Verify the tag-only convention works for a single model
+python test_extra_args_tag.py --model-path C:\models\sd-turbo-amdnpu-onnx
+
+# Across every model that supports img2img
+python test_extra_args_tag.py --all-models
+```
+
 ## Options (shared across all scripts)
 
 | Flag | Purpose |
@@ -307,12 +339,20 @@ and usage.
   argument path, even though the executable supports all of that.
 - **No multi-image (`n > 1`) requests, error-path testing (bad prompt, bad
   image size, unknown ControlNet type), or concurrency testing.**
-- **No parameter-passthrough verification** (i.e. asserting the server
-  actually received the exact steps/guidance/seed/strength that was sent).
-  This was considered and deliberately left out to keep the test scripts
-  simple — it would require regex-parsing server stdout, which couples
-  tests to log wording and adds fragility disproportionate to the value.
-  If ever needed, treat it as a separate, explicitly-scoped follow-up.
+- **No parameter-*value* verification** (i.e. asserting the server actually
+  received the exact steps/guidance/seed that was sent). `test_extra_args_tag.py`
+  covers the adjacent gap of *wire-format* coverage — steps/cfg_scale/seed/
+  strength carried only by the `<sd_cpp_extra_args>` tag, as opposed to
+  plain fields — but only asserts the request succeeds, not that the tagged
+  values were honored. `lemonade_integration/test_visual_modes.py`'s
+  `run_img2img()` closes this for `strength` specifically: it holds prompt
+  and seed fixed across a strength sweep and asserts every pair of outputs
+  differs. Extending that same fixed-everything-but-X pattern to
+  steps/guidance/seed would require regex-parsing server stdout (couples
+  tests to log wording) since those don't reliably produce a *visible* PNG
+  difference the way strength does; that was deliberately left out to keep
+  the test scripts simple. If ever needed, treat it as a separate,
+  explicitly-scoped follow-up.
 
 ## Structure
 
@@ -325,6 +365,7 @@ test/
 ├── test_variants.py       # /v1/images/variations (unprompted)
 ├── test_controlnet.py     # /v1/images/edits
 ├── test_cli.py            # executable, no server
+├── test_extra_args_tag.py # /v1/images/edits, /v1/images/variations (tag-only)
 ├── models.json            # Model configs (data-driven, no if/else)
 ├── requirements.txt
 ├── img2img_test_input.png  # Shared source image for img2img/variants (auto-generated if missing)

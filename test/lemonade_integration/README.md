@@ -139,3 +139,17 @@ runner must already have a pre-built binary on disk (pointed to by
 binary happens to be there rather than picking up new commits to this repo.
 This suite doesn't fix that; it's flagged here as a follow-up to raise
 separately (requires lemonade repo write access).
+
+## Known gap: strength sweep doesn't verify a measurable difference
+
+Closed: `run_img2img()` now holds `prompt` and `seed` fixed across the
+`STRENGTH_SWEEP` and asserts every pair of outputs actually differs via
+`images_differ()`, so a silently-ignored/dropped `strength` value now fails
+the check instead of passing unnoticed.
+
+This is also the coverage gap that a companion fix relied on
+`test_extra_args_tag.py` (in `../`, talking to `ryzenai-sd-server.exe`
+directly rather than through `lemond`) to catch instead: it verifies
+`strength` carried only by the `<sd_cpp_extra_args>` prompt tag (Lemonade's
+actual wire format) is parsed at all, but only asserts request success, not
+that the value was honored.

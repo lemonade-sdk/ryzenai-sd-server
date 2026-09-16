@@ -32,11 +32,13 @@ from lemonade_client import (
     assert_not_blank,
     assert_valid_png,
     decode_b64_images,
+    images_differ,
     make_test_input_png,
 )
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 STRENGTH_SWEEP = (0.3, 0.6, 0.9)
+STRENGTH_SWEEP_SEED = 1234  # fixed so any output difference is attributable to strength
 IMG2IMG_MODELS = ("SD-1.5-NPU", "SDXL-Base-NPU")
 VARIANT_MODELS = ("SD-Turbo-NPU", "SDXL-Turbo-NPU")
 ALL_MODES = ("txt2img", "img2img", "variants", "controlnet")
@@ -79,10 +81,13 @@ def run_img2img(client, models):
     failures = 0
     input_png = make_test_input_png()
     for model in models:
+        # Same prompt + seed across the sweep -- strength is the only variable,
+        # so any output difference below is attributable to it actually being honored.
+        prompt = f"a watercolor painting ({model})"
+        outputs_by_strength = {}
         for strength in STRENGTH_SWEEP:
-            r = client.variations(model, input_png,
-                                  prompt=f"a watercolor painting ({model}, strength={strength})",
-                                  strength=strength)
+            r = client.variations(model, input_png, prompt=prompt,
+                                  strength=strength, seed=STRENGTH_SWEEP_SEED)
             label = f"img2img[{model}, strength={strength}]"
             if not check(f"{label}: request succeeds", r.ok, f"{r.status_code}: {r.text[:300]}"):
                 failures += 1
@@ -95,6 +100,15 @@ def run_img2img(client, models):
             img = assert_valid_png(imgs[0])
             stddev = assert_not_blank(img)
             print(f"    saved {path} ({img.width}x{img.height}, stddev={stddev:.2f})")
+            outputs_by_strength[strength] = imgs[0]
+
+        swept = list(outputs_by_strength)
+        for i in range(len(swept)):
+            for j in range(i + 1, len(swept)):
+                s_a, s_b = swept[i], swept[j]
+                if not check(f"img2img[{model}]: strength={s_a} output differs from strength={s_b}",
+                             images_differ(outputs_by_strength[s_a], outputs_by_strength[s_b])):
+                    failures += 1
     return failures
 
 
