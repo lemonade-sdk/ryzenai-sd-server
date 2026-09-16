@@ -330,7 +330,7 @@ python test_server.py cli --all-models
 `test_server.py` is a single, data-driven runner covering `txt2img`,
 `img2img`, `variations`, `controlnet`, and `cli` modes against every model
 listed in `test/models.json` (auto-downloading from the HuggingFace cache if
-needed). See [test/README.md](test/README.md) for the full flag reference,
+needed). See [test/TEST_README.md](test/TEST_README.md) for the full flag reference,
 output format, and known coverage gaps (e.g. mask-aware ControlNet
 inpainting/outpainting isn't yet exercised by this harness).
 
