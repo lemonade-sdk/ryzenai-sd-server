@@ -326,7 +326,6 @@ jobs:
           path: |
             build/bin/Release/*.exe
             build/bin/Release/*.dll
-            build/bin/Release/*.pdb
             build/bin/Release/lib/
           retention-days: 7
 
