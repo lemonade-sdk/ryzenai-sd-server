@@ -137,8 +137,8 @@ struct CliArgs {
     std::string revision;          // Git branch/tag/commit for HF download
     std::string variant_str;       // empty = auto-detect
     // DD env defaults (absolute paths)
-    std::string dd_root = "C:/Program Files/RyzenAI/1.8.0/deployment";
-    std::string dd_plugins_root = "C:/Program Files/RyzenAI/1.8.0/deployment";
+    std::string dd_root = "C:/Program Files/RyzenAI/1.9.0/deployment";
+    std::string dd_plugins_root = "C:/Program Files/RyzenAI/1.9.0/deployment";
 
     // Generation
     std::string prompt = "An astronaut riding a green horse";

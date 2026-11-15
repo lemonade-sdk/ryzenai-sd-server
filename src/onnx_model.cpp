@@ -100,7 +100,7 @@ OnnxModel::OnnxModel(const std::string& model_path,
         std::string dd_posix = actual_cache.string();
         std::replace(dd_posix.begin(), dd_posix.end(), '\\', '/');
 
-        // RyzenAI 1.8 DynamicDispatch / NPU models require the RyzenAI plugin
+        // RyzenAI DynamicDispatch / NPU models require the RyzenAI plugin
         // execution provider ("RyzenAILightExecutionProvider") to be registered on
         // the OrtEnv and appended to the session — this mirrors the working GenAI-SD
         // python reference (config_session_options in src/utils/common.py).
@@ -114,7 +114,7 @@ OnnxModel::OnnxModel(const std::string& model_path,
         if (GetModuleFileNameW(nullptr, exe_buf, MAX_PATH) > 0)
             ops_path = fs::path(exe_buf).parent_path() / k_ops_dll;
         if (!fs::exists(ops_path))
-            ops_path = L"C:/Program Files/RyzenAI/1.8.0/deployment/onnxruntime_providers_ryzenai.dll";
+            ops_path = L"C:/Program Files/RyzenAI/1.9.0/deployment/onnxruntime_providers_ryzenai.dll";
         if (fs::exists(ops_path)) {
             std::wstring ops_dir = ops_path.parent_path().wstring();
             AddDllDirectory(ops_dir.c_str());

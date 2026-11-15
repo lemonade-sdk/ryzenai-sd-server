@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ryzenai-sd-server VERSION 1.8.0 LANGUAGES CXX)
+project(ryzenai-sd-server VERSION 1.9.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,10 +27,10 @@ if(NOT DEFINED ONNXRUNTIME_LIB_DIR)
         set(ONNXRUNTIME_LIB_DIR "$ENV{ONNXRUNTIME_LIB_DIR}" CACHE PATH
             "Directory containing onnxruntime.lib and runtime DLLs")
     elseif(WIN32)
-        set(ONNXRUNTIME_LIB_DIR "C:/Program Files/RyzenAI/1.8.0/onnxruntime/lib" CACHE PATH
+        set(ONNXRUNTIME_LIB_DIR "C:/Program Files/RyzenAI/1.9.0/onnxruntime/lib" CACHE PATH
             "Directory containing onnxruntime.lib and runtime DLLs")
     elseif(UNIX AND NOT APPLE)
-        set(ONNXRUNTIME_LIB_DIR "/opt/ryzenai/1.8.0/onnxruntime/lib" CACHE PATH
+        set(ONNXRUNTIME_LIB_DIR "/opt/ryzenai/1.9.0/onnxruntime/lib" CACHE PATH
             "Directory containing libonnxruntime.so")
     endif()
 endif()

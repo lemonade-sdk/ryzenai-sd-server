@@ -48,7 +48,7 @@ Windows Requirements:
 - Visual Studio 2022
 - CMake 3.20 or higher
 - ONNX Runtime library (`onnxruntime.lib` / `onnxruntime.dll`)
-  - Typically from Ryzen AI SDK at `C:\Program Files\RyzenAI\1.8.0\onnxruntime\lib`
+  - Typically from Ryzen AI SDK at `C:\Program Files\RyzenAI\1.9.0\onnxruntime\lib`
   - ONNX Runtime headers are already vendored in the repo — no SDK needed for compilation
 
 Hardware Requirements:
@@ -141,7 +141,7 @@ custom ops, DynamicDispatch runtime):
 
 ```cmd
 cmake .. -G "Visual Studio 17 2022" -A x64 ^
-  -DRUNTIME_DLLS_DIR="C:\Program Files\RyzenAI\1.8.0\deployment"
+  -DRUNTIME_DLLS_DIR="C:\Program Files\RyzenAI\1.9.0\deployment"
 cmake --build . --config Release
 ```
 
@@ -149,7 +149,7 @@ To deploy a full directory tree (preserving subdirectory structure):
 
 ```cmd
 cmake .. -G "Visual Studio 17 2022" -A x64 ^
-  -DLIB_DIRECTORY="C:\Program Files\RyzenAI\1.8.0\GenAI-SD\lib"
+  -DLIB_DIRECTORY="C:\Program Files\RyzenAI\1.9.0\GenAI-SD\lib"
 cmake --build . --config Release
 ```
 
