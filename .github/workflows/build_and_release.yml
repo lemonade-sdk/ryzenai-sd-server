@@ -53,7 +53,68 @@ jobs:
               Write-Host "CMake is already installed:" -ForegroundColor Green
               cmake --version
           }
+      - name: Install Ryzen AI 1.9.0 (if missing)
+        shell: PowerShell
+        env:
+          RAI_VERSION: "1.9.0"
+          RAI_URL: "https://download.amd.com/opendownload/RyzenAI/1.9.0/ryzen-ai-1.9.0-msi.zip"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"   # PS 5.1 downloads are very slow with the progress bar on
+          $root = "C:\Program Files\RyzenAI\$env:RAI_VERSION"
+          # The files the build step copies from. If any is missing, CMake skips the copy
+          # silently and the package ships without NPU DLLs, so check them here.
+          $required = @(
+            "onnxruntime\lib\onnxruntime.lib",
+            "deployment\onnxruntime_providers_ryzenai.dll",
+            "deployment\dyn_dispatch_core.dll",
+            "GenAI-SD\lib\transaction\stx"
+          )
+          function Test-Rai {
+            foreach ($r in $required) { if (-not (Test-Path (Join-Path $root $r))) { return $false } }
+            return $true
+          }
 
+          if (Test-Rai) { Write-Host "Ryzen AI $env:RAI_VERSION already installed at $root"; exit 0 }
+
+          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $isAdmin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole(
+                       [Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "Runner account: $($id.Name)  admin: $isAdmin"
+          if (-not $isAdmin) { Write-Host "ERROR: installing to Program Files needs admin rights"; exit 1 }
+
+          $work = Join-Path $env:RUNNER_TEMP "rai-$env:RAI_VERSION"
+          New-Item -ItemType Directory -Force $work | Out-Null
+          $zip = Join-Path $work "ryzen-ai.zip"
+          Write-Host "Downloading $env:RAI_URL"
+          Invoke-WebRequest -Uri $env:RAI_URL -OutFile $zip -UseBasicParsing
+          Expand-Archive $zip -DestinationPath $work -Force
+          $msi = Get-ChildItem $work -Recurse -Filter *.msi | Select-Object -First 1
+          if (-not $msi) { throw "No .msi inside $env:RAI_URL" }
+
+          $log = Join-Path $work "rai-install.log"
+          Write-Host "Installing $($msi.Name)"
+          $p = Start-Process msiexec.exe -Wait -PassThru `
+                 -ArgumentList "/i `"$($msi.FullName)`" /qn /norestart /l*v `"$log`""
+          Write-Host "msiexec exit code: $($p.ExitCode)"
+          if ($p.ExitCode -notin 0, 3010) { Get-Content $log -Tail 80; exit $p.ExitCode }
+
+          if (-not (Test-Rai)) {
+            Write-Host "Install finished but required files are missing. RyzenAI folders:"
+            Get-ChildItem "C:\Program Files\RyzenAI" -Directory | ForEach-Object { "  " + $_.FullName }
+            foreach ($r in $required) { "  {0,-5} {1}" -f (Test-Path (Join-Path $root $r)), $r }
+            exit 1
+          }
+          Write-Host "Ryzen AI $env:RAI_VERSION verified at $root"
+
+      - name: Show NPU driver version
+        shell: PowerShell
+        run: |
+          $npu = Get-PnpDevice -Class ComputeAccelerator -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($npu) {
+            $ver = (Get-PnpDeviceProperty -InstanceId $npu.InstanceId -KeyName DEVPKEY_Device_DriverVersion).Data
+            Write-Host "NPU: $($npu.FriendlyName)  driver: $ver"
+          } else { Write-Host "WARNING: no NPU device found" }
       - name: Build RyzenAI SD Server
         shell: PowerShell
         run: |
@@ -122,6 +183,13 @@ jobs:
 
           $fileCount = (Get-ChildItem $releaseDir -Recurse -File | Measure-Object).Count
           Write-Host "`nTotal: $fileCount files" -ForegroundColor Green
+
+          foreach ($f in @("onnxruntime_providers_ryzenai.dll", "dyn_dispatch_core.dll", "lib\transaction\stx")) {
+            if (-not (Test-Path (Join-Path $releaseDir $f))) {
+              Write-Host "ERROR: $f missing from the package (RyzenAI files were not copied)" -ForegroundColor Red
+              exit 1
+            }
+          }
 
       - name: Set up Python
         shell: PowerShell
@@ -328,6 +396,14 @@ jobs:
             build/bin/Release/*.dll
             build/bin/Release/lib/
           retention-days: 7
+          
+      - name: Upload Ryzen AI install log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rai-install-log
+          path: ${{ runner.temp }}/rai-1.9.0/rai-install.log
+          if-no-files-found: ignore
 
   create-release:
     name: Create GitHub Release
